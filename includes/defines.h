@@ -39,8 +39,17 @@
 #define MENUSIZE 40
 #define BARSIZE 17
 #endif
+#ifdef MAEMO /* MAEMO5 */
+/*
+(YRES+BARSIZE)*scale = (383+17)*2 = 400*2 = 800
+(XRES+MENUSIZE)*scale = (200+40)*2 = 240*2 = 480
+*/
+#define XRES	383
+#define YRES	200
+#else
 #define XRES	612
 #define YRES	384
+#endif
 #define NPART XRES*YRES
 
 #define XCNTR   306

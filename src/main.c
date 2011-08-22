@@ -1652,6 +1652,12 @@ int main(int argc, char *argv[])
 
 	load_presets();
 
+#ifdef MAEMO
+	kiosk_enable = 1;
+	sdl_scale = 2;
+	hud_enable = 1;
+#endif
+
 	for (i=1; i<argc; i++)
 	{
 		if (!strncmp(argv[i], "scale:", 6))
