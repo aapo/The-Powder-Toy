@@ -1,0 +1,11 @@
+[Desktop Entry]
+Encoding=UTF-8
+Version=1.0
+Type=Application
+Name=ThePowderToy
+Icon=powdertoy
+Exec=/opt/powdertoy/powdertoy
+X-Osso-Type=application/x-executable
+Terminal=false
+Categories=Game;
+
