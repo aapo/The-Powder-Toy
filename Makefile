@@ -170,3 +170,8 @@ powder-x-ogl: $(SOURCES)
 	gcc -o $@ $(CFLAGS) $(OFLAGS) $(LFLAGS_X) $(MFLAGS) $(SOURCES) -DOpenGL -DMACOSX -DPIX32BGRA -arch x86_64 -framework Cocoa -framework SDL -framework OpenGL
 	strip $@ 
 	mv $@ build
+
+powder-maemo: $(SOURCES)
+	$(COMPILER) -DINTERNAL -o$@ $(CFLAGS) $(OFLAGS) $(SOURCES) $(LFLAGS) -DLIN64 -DMAEMO
+	strip $@
+	mv $@ build
