@@ -1,3 +1,18 @@
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <element.h>
 /*these are the count values of where the particle gets stored, depending on where it came from
    0 1 2
@@ -21,7 +36,7 @@ int update_PRTO(UPDATE_FUNC_ARGS) {
 				r = pmap[y+ry][x+rx];
 				if (!r)
 					fe = 1;
-				if ((r>>8)>=NPART || r)
+				if (r)
 					continue;
 				if (!r)
 				{
@@ -44,12 +59,47 @@ int update_PRTO(UPDATE_FUNC_ARGS) {
 						else if (portalp[parts[i].tmp][randomness][nnx].type)
 						{
 							if (portalp[parts[i].tmp][randomness][nnx].type==PT_STKM)
-								player[27] = 0;
+								player.spwn = 0;
 							if (portalp[parts[i].tmp][randomness][nnx].type==PT_STKM2)
-								player2[27] = 0;
+								player2.spwn = 0;
+							if (portalp[parts[i].tmp][randomness][nnx].type==PT_FIGH)
+							{
+								fighcount--;
+								fighters[(unsigned char)portalp[parts[i].tmp][randomness][nnx].tmp].spwn = 0;
+							}
 							np = create_part(-1,x+rx,y+ry,portalp[parts[i].tmp][randomness][nnx].type);
-							if (np<0) continue;
-							parts[np] = portalp[parts[i].tmp][randomness][nnx];
+							if (np<0)
+							{
+								if (portalp[parts[i].tmp][randomness][nnx].type==PT_STKM)
+									player.spwn = 1;
+								if (portalp[parts[i].tmp][randomness][nnx].type==PT_STKM2)
+									player2.spwn = 1;
+								if (portalp[parts[i].tmp][randomness][nnx].type==PT_FIGH)
+								{
+									fighcount++;
+									fighters[(unsigned char)portalp[parts[i].tmp][randomness][nnx].tmp].spwn = 1;
+								}
+								continue;
+							}
+							if (parts[np].type==PT_FIGH)
+							{
+								// Release the fighters[] element allocated by create_part, the one reserved when the fighter went into the portal will be used
+								fighters[(unsigned char)parts[np].tmp].spwn = 0;
+								fighters[(unsigned char)portalp[parts[i].tmp][randomness][nnx].tmp].spwn = 1;
+							}
+							if (portalp[parts[i].tmp][randomness][nnx].vx == 0.0f && portalp[parts[i].tmp][randomness][nnx].vy == 0.0f)
+							{
+								// particles that have passed from PIPE into PRTI have lost their velocity, so use the velocity of the newly created particle if the particle in the portal has no velocity
+								float tmp_vx = parts[np].vx;
+								float tmp_vy = parts[np].vy;
+								parts[np] = portalp[parts[i].tmp][randomness][nnx];
+								parts[np].vx = tmp_vx;
+								parts[np].vy = tmp_vy;
+							}
+							else
+							{
+								parts[np] = portalp[parts[i].tmp][randomness][nnx];
+							}
 							parts[np].x = x+rx;
 							parts[np].y = y+ry;
 							portalp[parts[i].tmp][randomness][nnx] = emptyparticle;
@@ -62,8 +112,8 @@ int update_PRTO(UPDATE_FUNC_ARGS) {
 	if (fe) {
 		int orbd[4] = {0, 0, 0, 0};	//Orbital distances
 		int orbl[4] = {0, 0, 0, 0};	//Orbital locations
-		if (!parts[i].life) parts[i].life = rand();
-		if (!parts[i].ctype) parts[i].life = rand();
+		if (!parts[i].life) parts[i].life = rand()*rand()*rand();
+		if (!parts[i].ctype) parts[i].ctype = rand()*rand()*rand();
 		orbitalparts_get(parts[i].life, parts[i].ctype, orbd, orbl);
 		for (r = 0; r < 4; r++) {
 			if (orbd[r]<254) {
@@ -71,9 +121,10 @@ int update_PRTO(UPDATE_FUNC_ARGS) {
 				if (orbd[r]>254) {
 					orbd[r] = 0;
 					orbl[r] = rand()%255;
+				} else {
+					orbl[r] += 1;
+					orbl[r] = orbl[r]%255;
 				}
-				//orbl[r] += 1;
-				//orbl[r] = orbl[r]%255;
 			} else {
 				orbd[r] = 0;
 				orbl[r] = rand()%255;

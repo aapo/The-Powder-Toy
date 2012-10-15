@@ -1,3 +1,18 @@
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <element.h>
 /*these are the count values of where the particle gets stored, depending on where it came from
    0 1 2
@@ -24,16 +39,15 @@ int update_PRTI(UPDATE_FUNC_ARGS) {
 				r = pmap[y+ry][x+rx];
 				if (!r)
 					fe = 1;
-				if ((r>>8)>=NPART)
-					continue;
-				if (!r || (r&0xFF)==PT_PRTI || (r&0xFF)==PT_PRTO || (ptypes[r&0xFF].falldown== 0 && ptypes[r&0xFF].state != ST_GAS && (r&0xFF)!=PT_SPRK))
+				if (!r || (r&0xFF)==PT_PRTI || (r&0xFF)==PT_PRTO || (!(ptypes[r&0xFF].properties & (TYPE_PART | TYPE_LIQUID | TYPE_GAS | TYPE_ENERGY)) && (r&0xFF)!=PT_SPRK))
 				{
 					r = photons[y+ry][x+rx];
-					if ((r>>8)>=NPART)
-						continue;
-					if (!r || (r&0xFF)==PT_PRTI || (r&0xFF)==PT_PRTO || (ptypes[r&0xFF].falldown== 0 && ptypes[r&0xFF].state != ST_GAS && (r&0xFF)!=PT_SPRK))
+					if (!r || (r&0xFF)==PT_PRTI || (r&0xFF)==PT_PRTO || (!(ptypes[r&0xFF].properties & (TYPE_PART | TYPE_LIQUID | TYPE_GAS | TYPE_ENERGY)) && (r&0xFF)!=PT_SPRK))
 						continue;
 				}
+
+				if ((r&0xFF)==PT_STKM || (r&0xFF)==PT_STKM2 || (r&0xFF)==PT_FIGH)
+					continue;// Handling these is a bit more complicated, and is done in STKM_interact()
 
 				if ((r&0xFF) == PT_SOAP)
 					detach(r>>8);
@@ -56,8 +70,8 @@ int update_PRTI(UPDATE_FUNC_ARGS) {
 	if (fe) {
 		int orbd[4] = {0, 0, 0, 0};	//Orbital distances
 		int orbl[4] = {0, 0, 0, 0};	//Orbital locations
-		if (!parts[i].life) parts[i].life = rand();
-		if (!parts[i].ctype) parts[i].ctype = rand();
+		if (!parts[i].life) parts[i].life = rand()*rand()*rand();
+		if (!parts[i].ctype) parts[i].ctype = rand()*rand()*rand();
 		orbitalparts_get(parts[i].life, parts[i].ctype, orbd, orbl);
 		for (r = 0; r < 4; r++) {
 			if (orbd[r]>1) {

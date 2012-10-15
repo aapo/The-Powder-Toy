@@ -1,3 +1,18 @@
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <element.h>
 
 int update_DSTW(UPDATE_FUNC_ARGS) {
@@ -7,18 +22,20 @@ int update_DSTW(UPDATE_FUNC_ARGS) {
 			if (x+rx>=0 && y+ry>0 && x+rx<XRES && y+ry<YRES && (rx || ry))
 			{
 				r = pmap[y+ry][x+rx];
-				if ((r>>8)>=NPART || !r)
+				if (!r)
 					continue;
 				if ((r&0xFF)==PT_SALT && 1>(rand()%250))
 				{
 					part_change_type(i,x,y,PT_SLTW);
-					part_change_type(r>>8,x+rx,y+ry,PT_SLTW);
+					// on average, convert 3 DSTW to SLTW before SALT turns into SLTW
+					if (rand()%3==0)
+						part_change_type(r>>8,x+rx,y+ry,PT_SLTW);
 				}
 				if (((r&0xFF)==PT_WATR||(r&0xFF)==PT_SLTW) && 1>(rand()%500))
 				{
 					part_change_type(i,x,y,PT_WATR);
 				}
-				if ((r&0xFF)==PT_SLTW && 1>(rand()%500))
+				if ((r&0xFF)==PT_SLTW && 1>(rand()%10000))
 				{
 					part_change_type(i,x,y,PT_SLTW);
 				}
@@ -26,6 +43,13 @@ int update_DSTW(UPDATE_FUNC_ARGS) {
 				{
 					part_change_type(i,x,y,PT_FIRE);
 					parts[i].life = 4;
+				}
+				if ((r&0xFF)==PT_FIRE){
+					kill_part(r>>8);
+						if(1>(rand()%150)){
+							kill_part(i);
+							return 1;
+						}
 				}
 			}
 	return 0;

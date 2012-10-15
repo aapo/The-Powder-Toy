@@ -1,3 +1,18 @@
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <element.h>
 
 int update_SPRK(UPDATE_FUNC_ARGS) {
@@ -8,7 +23,7 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 	{
 		if (ct==PT_WATR||ct==PT_SLTW||ct==PT_PSCN||ct==PT_NSCN||ct==PT_ETRD||ct==PT_INWR)
 			parts[i].temp = R_TEMP + 273.15f;
-		if (ct<=0 || ct>=PT_NUM)
+		if (ct<=0 || ct>=PT_NUM || !ptypes[ct].enabled)
 			ct = PT_METL;
 		part_change_type(i,x,y,ct);
 		parts[i].ctype = PT_NONE;
@@ -32,7 +47,7 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 	}
 	else if (ct==PT_ETRD&&parts[i].life==1)
 	{
-		nearp = nearest_part(i, PT_ETRD);
+		nearp = nearest_part(i, PT_ETRD, -1);
 		if (nearp!=-1&&parts_avg(i, nearp, PT_INSL)!=PT_INSL)
 		{
 			create_line(x, y, (int)(parts[nearp].x+0.5f), (int)(parts[nearp].y+0.5f), 0, 0, PT_PLSM, 0);
@@ -44,7 +59,7 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 			parts[nearp].ctype = PT_ETRD;
 		}
 	}
-	else if (ct==PT_NBLE&&parts[i].life<=1)
+	else if (ct==PT_NBLE&&parts[i].life<=1&&parts[i].temp<5273.15)
 	{
 		parts[i].life = rand()%150+50;
 		part_change_type(i,x,y,PT_PLSM);
@@ -52,13 +67,47 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 		parts[i].temp = 3500;
 		pv[y/CELL][x/CELL] += 1;
 	}
+	else if (ct==PT_TESC) // tesla coil code
+	{
+		if (parts[i].tmp>300)
+			parts[i].tmp=300;
+		for (rx=-1; rx<2; rx++)
+			for (ry=-1; ry<2; ry++)
+				if (x+rx>=0 && y+ry>0 && x+rx<XRES && y+ry<YRES && (rx || ry))
+				{
+					r = pmap[y+ry][x+rx];
+					if (r)
+						continue;
+					if (parts[i].tmp>4 && rand()%(parts[i].tmp*parts[i].tmp/20+6)==0)
+					{
+						int p=create_part(-1, x+rx*2, y+ry*2, PT_LIGH);
+						if (p!=-1)
+						{
+							parts[p].life=rand()%(2+parts[i].tmp/15)+parts[i].tmp/7;
+							if (parts[i].life>60)
+								parts[i].life=60;
+							parts[p].temp=parts[p].life*parts[i].tmp/2.5;
+							parts[p].tmp2=1;
+							parts[p].tmp=atan2(-ry, rx)/M_PI*360;
+							parts[i].temp-=parts[i].tmp*2+parts[i].temp/5; // slight self-cooling
+							if (fabs(pv[y/CELL][x/CELL])!=0.0f)
+							{
+								if (fabs(pv[y/CELL][x/CELL])<=0.5f)
+									pv[y/CELL][x/CELL]=0;
+								else
+									pv[y/CELL][x/CELL]-=(pv[y/CELL][x/CELL]>0)?0.5:-0.5;
+							}
+						}
+					}
+				}
+	}
 	else if (ct==PT_IRON) {
 		for (rx=-1; rx<2; rx++)
 			for (ry=-1; ry<2; ry++)
 				if (x+rx>=0 && y+ry>0 && x+rx<XRES && y+ry<YRES && (rx || ry))
 				{
 					r = pmap[y+ry][x+rx];
-					if ((r>>8)>=NPART || !r)
+					if (!r)
 						continue;
 					if (((r&0xFF) == PT_DSTW && 30>(rand()/(RAND_MAX/1000))) ||
 					        ((r&0xFF) == PT_SLTW && 30>(rand()/(RAND_MAX/1000))) ||
@@ -76,14 +125,14 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 			if (x+rx>=0 && y+ry>0 && x+rx<XRES && y+ry<YRES && (rx || ry))
 			{
 				r = pmap[y+ry][x+rx];
-				if ((r>>8)>=NPART || !r)
+				if (!r)
 					continue;
 				rt = parts[r>>8].type;
 				conduct_sprk = 1;
 
 
 				pavg = parts_avg(r>>8, i,PT_INSL);
-				if ((rt==PT_SWCH||(rt==PT_SPRK&&parts[r>>8].ctype==PT_SWCH)) && pavg!=PT_INSL) // make sparked SWCH turn off correctly
+				if ((rt==PT_SWCH||(rt==PT_SPRK&&parts[r>>8].ctype==PT_SWCH)) && pavg!=PT_INSL && parts[i].life<4) // make sparked SWCH turn off correctly
 				{
 					if (rt==PT_SWCH&&ct==PT_PSCN&&parts[r>>8].life<10) {
 						parts[r>>8].life = 10;
@@ -94,12 +143,22 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 						parts[r>>8].life = 9;
 					}
 				}
-				else if ((ct==PT_PSCN||ct==PT_NSCN) && (rt==PT_PUMP||rt==PT_GPMP||rt==PT_HSWC||rt==PT_PBCN||(rt==PT_LCRY&&abs(rx)<2&&abs(ry)<2))) // PROP_PTOGGLE, Maybe? We seem to use 2 different methods for handling actived elements, this one seems better. Yes, use this one for new elements, PCLN is different for compatibility with existing saves
+				else if ((ct==PT_PSCN||ct==PT_NSCN) && (rt==PT_PUMP||rt==PT_GPMP||rt==PT_HSWC||rt==PT_PBCN) && parts[i].life<4) // PROP_PTOGGLE, Maybe? We seem to use 2 different methods for handling actived elements, this one seems better. Yes, use this one for new elements, PCLN is different for compatibility with existing saves
 				{
 					if (ct==PT_PSCN) parts[r>>8].life = 10;
 					else if (ct==PT_NSCN && parts[r>>8].life>=10) parts[r>>8].life = 9;
 				}
+				else if ((ct==PT_PSCN||ct==PT_NSCN) && (rt==PT_LCRY&&abs(rx)<2&&abs(ry)<2) && parts[i].life<4)
+				{
+					if (ct==PT_PSCN && parts[r>>8].tmp == 0) parts[r>>8].tmp = 2;
+					else if (ct==PT_NSCN && parts[r>>8].tmp == 3) parts[r>>8].tmp = 1;
+				}
 
+				if (rt == PT_PPIP && parts[i].life == 3 && pavg!=PT_INSL)
+				{
+					if (ct == PT_NSCN || ct == PT_PSCN || ct == PT_INST)
+						PPIP_flood_trigger(x+rx, y+ry, ct);
+				}
 
 				// ct = spark from material, rt = spark to material. Make conduct_sprk = 0 if conduction not allowed
 
@@ -109,7 +168,7 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 					conduct_sprk = 0;
 
 
-				if (ct==PT_METL && (rt==PT_NTCT||rt==PT_PTCT||rt==PT_INWR||(rt==PT_SPRK&&(parts[r>>8].ctype==PT_NTCT||parts[r>>8].ctype==PT_PTCT))) && pavg!=PT_INSL)
+				if (ct==PT_METL && (rt==PT_NTCT||rt==PT_PTCT||rt==PT_INWR||(rt==PT_SPRK&&(parts[r>>8].ctype==PT_NTCT||parts[r>>8].ctype==PT_PTCT))) && pavg!=PT_INSL && parts[i].life<4)
 				{
 					parts[r>>8].temp = 473.0f;
 					if (rt==PT_NTCT||rt==PT_PTCT)
@@ -138,10 +197,12 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 					conduct_sprk = 0;
 				if (rt==PT_INST&&ct!=PT_PSCN)
 					conduct_sprk = 0;
+				if (rt == PT_NBLE && parts[r>>8].temp > 5273.15)
+					conduct_sprk = 0;
 
 				if (conduct_sprk) {
 					if (rt==PT_WATR||rt==PT_SLTW) {
-						if (parts[r>>8].life==0 && (parts[i].life<2 || ((r>>8)<i && parts[i].life<3)))
+						if (parts[r>>8].life==0 && parts[i].life<3)
 						{
 							part_change_type(r>>8,x+rx,y+ry,PT_SPRK);
 							if (rt==PT_WATR) parts[r>>8].life = 6;
@@ -150,12 +211,12 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 						}
 					}
 					else if (rt==PT_INST) {
-						if (parts[i].life>=3&&parts[r>>8].life==0)
+						if (parts[r>>8].life==0 && parts[i].life<4)
 						{
-							flood_parts(x+rx,y+ry,PT_SPRK,PT_INST,-1, 0);//spark the wire
+							flood_INST(x+rx,y+ry,PT_SPRK,PT_INST);//spark the wire
 						}
 					}
-					else if (parts[r>>8].life==0 && (parts[i].life<3 || ((r>>8)<i && parts[i].life<4))) {
+					else if (parts[r>>8].life==0 && parts[i].life<4) {
 						parts[r>>8].life = 4;
 						parts[r>>8].ctype = rt;
 						part_change_type(r>>8,x+rx,y+ry,PT_SPRK);
@@ -174,4 +235,16 @@ int update_SPRK(UPDATE_FUNC_ARGS) {
 				}
 			}
 	return 0;
+}
+
+int graphics_SPRK(GRAPHICS_FUNC_ARGS)
+{
+	*firea = 80;
+	
+	*firer = 170;
+	*fireg = 200;
+	*fireb = 220;
+	//*pixel_mode |= FIRE_ADD;
+	*pixel_mode |= FIRE_ADD;
+	return 1;
 }

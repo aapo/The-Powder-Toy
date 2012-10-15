@@ -1,3 +1,19 @@
+/**
+ * Powder Toy - user interface (header)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 #ifndef INTERFACE_H
 #define INTERFACE_H
 #include <SDL/SDL.h>
@@ -15,6 +31,17 @@ struct menu_section
 };
 typedef struct menu_section menu_section;
 
+#define QM_TOGGLE	1
+
+struct quick_option
+{
+	char *icon;
+	const char *name;
+	int type;
+	int *variable;
+};
+typedef struct quick_option quick_option;
+
 struct menu_wall
 {
 	pixel colour;
@@ -25,42 +52,59 @@ typedef struct menu_wall menu_wall;
 #define SC_WALL 0
 #define SC_ELEC 1
 #define SC_POWERED 2
-#define SC_EXPLOSIVE 3
-#define SC_GAS 4
-#define SC_LIQUID 5
-#define SC_POWDERS 6
-#define SC_SOLIDS 7
-#define SC_NUCLEAR 8
-#define SC_SPECIAL 9
-#define SC_LIFE 10
+#define SC_FORCE 3
+#define SC_EXPLOSIVE 4
+#define SC_GAS 5
+#define SC_LIQUID 6
+#define SC_POWDERS 7
+#define SC_SOLIDS 8
+#define SC_NUCLEAR 9
+#define SC_SPECIAL 10
+#define SC_LIFE 11
+#define SC_TOOL 12
+
 #define SC_CRACKER 13
 #define SC_CRACKER2 14
-#define SC_TOTAL 11
+#define SC_TOTAL 13
 
 static menu_section msections[] = //doshow does not do anything currently.
 {
 	{"\xC1", "Walls", 0, 1},
 	{"\xC2", "Electronics", 0, 1},
 	{"\xD6", "Powered Materials", 0, 1},
+	{"\xE2", "Force Creating", 0, 1},
 	{"\xC3", "Explosives", 0, 1},
-	{"\xC5", "Gasses", 0, 1},
+	{"\xC5", "Gases", 0, 1},
 	{"\xC4", "Liquids", 0, 1},
 	{"\xD0", "Powders", 0, 1},
 	{"\xD1", "Solids", 0, 1},
 	{"\xC6", "Radioactive", 0, 1},
 	{"\xCC", "Special", 0, 1},
 	{"\xD2", "Life", 0, 1},
+	{"\xD7", "Tools", 0, 1},
 	{"\xD2", "More Life", 0, 1},
 	{"\xC8", "", 0, 0},
 	{"\xC8", "Cracker", 0, 0},
 	{"\xC8", "Cracker!", 0, 0},
 };
 
+static quick_option quickmenu[] =
+{
+	{"P", "Sand effect", QM_TOGGLE, &pretty_powder},
+	{"G", "Draw gravity grid", QM_TOGGLE, &drawgrav_enable},
+	{"D", "Show decorations", QM_TOGGLE, &decorations_enable},
+	{"N", "Newtonian gravity", QM_TOGGLE, &ngrav_enable},
+	{"A", "Ambient heat", QM_TOGGLE, &aheat_enable},
+	{"C", "Show Console", QM_TOGGLE, &console_mode},
+	{NULL}
+};
+
 static menu_section colorsections[] = //doshow does not do anything currently.
 {
-	{"\xD1", "Colors", 7, 1},
-	{"\xC5", "Tools", 0, 1},
+	{"\xC4", "Colors", 7, 1},
+	{"\xD7", "Tools", 0, 1},
 };
+#define DECO_SECTIONS 2
 
 static menu_wall colorlist[] =
 {
@@ -73,6 +117,19 @@ static menu_wall colorlist[] =
 	{PIXPACK(0xFFFFFF), "White"},
 };
 
+#define DECO_DRAW 0
+#define DECO_LIGHTEN 1
+#define DECO_DARKEN 2
+#define DECO_SMUDGE 3
+
+static menu_wall toollist[] =
+{
+	{PIXPACK(0xFF0000), "Draw"},
+	{PIXPACK(0xDDDDDD), "Lighten"},
+	{PIXPACK(0x111111), "Darken"},
+	{PIXPACK(0x00FF00), "Smudge"},
+};
+
 struct ui_edit
 {
 	int x, y, w, nx, h;
@@ -80,6 +137,14 @@ struct ui_edit
 	int focus, cursor, hide, multiline;
 };
 typedef struct ui_edit ui_edit;
+
+struct ui_list
+{
+	int x, y, w, h;
+	char str[256],*def,**items;
+	int selected, focus, count;
+};
+typedef struct ui_list ui_list;
 
 struct ui_copytext
 {
@@ -132,7 +197,7 @@ typedef struct ui_richtext ui_richtext;
 
 int SLALT;
 extern SDLMod sdl_mod;
-extern int sdl_key, sdl_rkey, sdl_wheel, sdl_caps, sdl_ascii, sdl_zoom_trig;
+extern int sdl_key, sdl_rkey, sdl_wheel, sdl_ascii, sdl_zoom_trig;
 #if (defined(LIN32) || defined(LIN64)) && defined(SDL_VIDEO_DRIVER_X11)
 extern SDL_SysWMinfo sdl_wminfo;
 extern Atom XA_CLIPBOARD, XA_TARGETS;
@@ -187,9 +252,11 @@ extern int zoom_en;
 extern int zoom_x, zoom_y;
 extern int zoom_wx, zoom_wy;
 
-extern int drawgrav_enable;
-
 void menu_count(void);
+
+void quickoptions_menu(pixel *vid_buf, int b, int bq, int x, int y);
+
+void prop_edit_ui(pixel *vid_buf, int x, int y);
 
 void get_sign_pos(int i, int *x0, int *y0, int *w, int *h);
 
@@ -198,6 +265,10 @@ void add_sign_ui(pixel *vid_buf, int mx, int my);
 void ui_edit_draw(pixel *vid_buf, ui_edit *ed);
 
 void ui_edit_process(int mx, int my, int mb, ui_edit *ed);
+
+void ui_list_draw(pixel *vid_buf, ui_list *ed);
+
+void ui_list_process(pixel * vid_buf, int mx, int my, int mb, ui_list *ed);
 
 void ui_checkbox_draw(pixel *vid_buf, ui_checkbox *ed);
 
@@ -217,11 +288,15 @@ void draw_svf_ui(pixel *vid_buf, int alternate);
 
 void error_ui(pixel *vid_buf, int err, char *txt);
 
+void element_search_ui(pixel *vid_buf, int * sl, int * sr);
+
 void info_ui(pixel *vid_buf, char *top, char *txt);
 
 void copytext_ui(pixel *vid_buf, char *top, char *txt, char *copytxt);
 
 void info_box(pixel *vid_buf, char *msg);
+
+void info_box_overlay(pixel *vid_buf, char *msg);
 
 char *input_ui(pixel *vid_buf, char *title, char *prompt, char *text, char *shadow);
 
@@ -239,11 +314,13 @@ int save_filename_ui(pixel *vid_buf);
 
 void menu_ui(pixel *vid_buf, int i, int *sl, int *sr);
 
-void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq, int mx, int my);
+void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *su, int *dae, int b, int bq, int mx, int my);
 
-int color_menu_ui(pixel *vid_buf, int i, int *cr, int *cg, int *cb, int b, int bq, int mx, int my);
+int color_menu_ui(pixel *vid_buf, int i, int *cr, int *cg, int *cb, int b, int bq, int mx, int my, int * tool);
 
 int sdl_poll(void);
+
+void stickmen_keys();
 
 void set_cmode(int cm);
 
@@ -281,8 +358,15 @@ int report_ui(pixel *vid_buf, char *save_id);
 
 char *console_ui(pixel *vid_buf, char error[255],char console_more);
 
+void render_ui(pixel *vid_buf, int xcoord, int ycoord, int orientation);
+
 void simulation_ui(pixel *vid_buf);
 
 unsigned int decorations_ui(pixel *vid_buf, int *bsx, int *bsy, unsigned int savedColor);
+
+Uint8 mouse_get_state(int *x, int *y);
+
+void mouse_coords_window_to_sim(int *sim_x, int *sim_y, int window_x, int window_y);
+
 #endif
 

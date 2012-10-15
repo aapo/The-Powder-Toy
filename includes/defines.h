@@ -1,3 +1,19 @@
+/**
+ * Powder Toy - Main source
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 #ifndef DEFINE_H
 #define DEFINE_H
 
@@ -8,16 +24,23 @@
 #endif
  
 //VersionInfoStart
-#define SAVE_VERSION 57
+#define SAVE_VERSION 83
 #define MINOR_VERSION 0
-#define BETA
+#define BUILD_NUM 205
 //VersionInfoEnd
 
-#define IDENT_VERSION "G" //Change this if you're not Simon! It should be a single letter.
+#define IDENT_VERSION "G" //Change this if you're not Simon! It should be a single letter
+
+#define MTOS_EXPAND(str) #str
+#define MTOS(str) MTOS_EXPAND(str)
 
 #define SERVER "powdertoy.co.uk"
+#define SCRIPTSERVER "powdertoy.co.uk"
+#define STATICSERVER "static.powdertoy.co.uk"
 
 #define LOCAL_SAVE_DIR "Saves"
+
+#define APPDATA_SUBDIR "\\HardWIRED"
 
 #define THUMB_CACHE_SIZE 256
 
@@ -79,9 +102,10 @@ extern unsigned char ZSIZE;
 #define CATALOGUE_S 6
 #define CATALOGUE_Z 3
 
-#define STAMP_X 4
-#define STAMP_Y 4
 #define STAMP_MAX 240
+
+#define SAVE_OPS
+//#define REALISTIC
 
 #define NGOL 25
 #define NGOLALT 24 //NGOL should be 24, but use this var until I find out why
@@ -90,13 +114,6 @@ extern unsigned char ZSIZE;
 #define SQUARE_BRUSH 1
 #define TRI_BRUSH 2
 #define BRUSH_NUM 3
-
-
-//#define GRAVFFT
-//#define LUACONSOLE
-//#define PYCONSOLE
-//#define PYEXT
-//no longer needed
 
 #ifdef PIX16
 typedef unsigned short pixel;
@@ -126,14 +143,26 @@ typedef unsigned int pixel;
 #define fmaxf max
 #endif
 
+#if defined(WIN32) && !defined(__GNUC__)
+#define TPT_INLINE _inline
+#else
+#define TPT_INLINE inline
+#endif
+
 #define SDEUT
 //#define REALHEAT
 
 #define DEBUG_PARTS		0x0001
 #define DEBUG_PARTCOUNT	0x0002
 #define DEBUG_DRAWTOOL	0x0004
+#define DEBUG_PERFORMANCE_CALC 0x0008
+#define DEBUG_PERFORMANCE_FRAME 0x0010
 
 typedef unsigned char uint8;
+
+extern int saveURIOpen;
+extern char * saveDataOpen;
+extern int saveDataOpenSize;
 
 extern int amd;
 
@@ -149,14 +178,28 @@ int GRAV_G2;
 int GRAV_B2;
 
 extern int legacy_enable;
-extern int ngrav_enable; //Newtonian gravity
 extern int sound_enable;
 extern int kiosk_enable;
 extern int aheat_enable;
 extern int decorations_enable;
+extern int active_menu;
 extern int hud_enable;
-extern int debug_flags;
+extern int pretty_powder;
+extern int drawgrav_enable;
+extern int ngrav_enable;
+extern char bframe;
 int limitFPS;
+int water_equal_test;
+extern int quickoptions_tooltip_fade;
+extern int loop_time;
+
+extern int debug_flags;
+#define DEBUG_PERF_FRAMECOUNT 256
+extern int debug_perf_istart;
+extern int debug_perf_iend;
+extern long debug_perf_frametime[DEBUG_PERF_FRAMECOUNT];
+extern long debug_perf_partitime[DEBUG_PERF_FRAMECOUNT];
+extern long debug_perf_time;
 
 extern int active_menu;
 
@@ -191,8 +234,8 @@ int ISWIRE;
 int GSPEED;
 int love[XRES/9][YRES/9];
 int lolz[XRES/9][YRES/9];
-unsigned char gol[XRES][YRES];
-unsigned char gol2[XRES][YRES][NGOL+1];
+unsigned char gol[YRES][XRES];
+unsigned char gol2[YRES][XRES][NGOL+1];
 int SEC;
 int SEC2;
 int console_mode;
@@ -217,7 +260,7 @@ extern int legacy_enable; //Used to disable new features such as heat, will be s
 extern int framerender;
 extern pixel *vid_buf;
 
-extern unsigned char last_major, last_minor, update_flag;
+extern unsigned char last_major, last_minor, update_flag, last_build;
 
 extern char http_proxy_string[256];
 
@@ -225,14 +268,9 @@ extern char http_proxy_string[256];
 void thumb_cache_inval(char *id);
 void thumb_cache_add(char *id, void *thumb, int size);
 int thumb_cache_find(char *id, void **thumb, int *size);
-void *build_thumb(int *size, int bzip2);
-void *build_save(int *size, int x0, int y0, int w, int h, unsigned char bmap[YRES/CELL][XRES/CELL], float fvx[YRES/CELL][XRES/CELL], float fvy[YRES/CELL][XRES/CELL], sign signs[MAXSIGNS], void* partsptr);
-int parse_save(void *save, int size, int replace, int x0, int y0, unsigned char bmap[YRES/CELL][XRES/CELL], float fvx[YRES/CELL][XRES/CELL], float fvy[YRES/CELL][XRES/CELL], sign signs[MAXSIGNS], void* partsptr, unsigned pmap[YRES][XRES]);
 void clear_sim(void);
 void del_stamp(int d);
 void sdl_seticon(void);
 void play_sound(char *file);
-void start_grav_async(void);
-void stop_grav_async(void);
 int set_scale(int scale, int kiosk);
 #endif

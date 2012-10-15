@@ -1,36 +1,33 @@
+/**
+ * Powder Toy - air simulation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <math.h>
 #include <air.h>
 #include <powder.h>
 #include <defines.h>
-
-#ifdef GRAVFFT
-#include <fftw3.h>
-#endif
+#include "gravity.h"
 
 float kernel[9];
-
-float gravmap[YRES/CELL][XRES/CELL];  //Maps to be used by the main thread
-float gravx[YRES/CELL][XRES/CELL];
-float gravy[YRES/CELL][XRES/CELL];
-float gravp[YRES/CELL][XRES/CELL];
-float *gravpf;
-float *gravyf;
-float *gravxf;
-unsigned gravmask[YRES/CELL][XRES/CELL];
-
-float th_ogravmap[YRES/CELL][XRES/CELL]; // Maps to be processed by the gravity thread
-float th_gravmap[YRES/CELL][XRES/CELL];
-float th_gravx[YRES/CELL][XRES/CELL];
-float th_gravy[YRES/CELL][XRES/CELL];
-float th_gravp[YRES/CELL][XRES/CELL];
-float *th_gravpf;
-float *th_gravyf;
-float *th_gravxf;
 
 float vx[YRES/CELL][XRES/CELL], ovx[YRES/CELL][XRES/CELL];
 float vy[YRES/CELL][XRES/CELL], ovy[YRES/CELL][XRES/CELL];
 float pv[YRES/CELL][XRES/CELL], opv[YRES/CELL][XRES/CELL];
 unsigned char bmap_blockair[YRES/CELL][XRES/CELL];
+unsigned char bmap_blockairh[YRES/CELL][XRES/CELL];
 
 float cb_vx[YRES/CELL][XRES/CELL];
 float cb_vy[YRES/CELL][XRES/CELL];
@@ -59,7 +56,8 @@ void make_kernel(void) //used for velocity
 void update_airh(void)
 {
 	int x, y, i, j;
-	float dh, dx, dy, f, tx, ty;
+	float odh, dh, dx, dy, f, tx, ty;
+	
 	for (i=0; i<YRES/CELL; i++) //reduces pressure/velocity on the edges every frame
 	{
 		hv[i][0] = 295.15f;
@@ -89,11 +87,8 @@ void update_airh(void)
 				{
 					if (y+j>0 && y+j<YRES/CELL-2 &&
 					        x+i>0 && x+i<XRES/CELL-2 &&
-					        bmap[y+j][x+i]!=WL_WALL &&
-					        bmap[y+j][x+i]!=WL_WALLELEC &&
-					        bmap[y+j][x+i]!=WL_GRAV && 
-					        (bmap[y+j][x+i]!=WL_EWALL || emap[y+j][x+i]))
-						{
+					        !bmap_blockairh[y+j][x+i])
+					{
 						f = kernel[i+1+(j+1)*3];
 						dh += hv[y+j][x+i]*f;
 						dx += vx[y+j][x+i]*f;
@@ -116,16 +111,17 @@ void update_airh(void)
 			ty -= j;
 			if (i>=2 && i<XRES/CELL-3 && j>=2 && j<YRES/CELL-3)
 			{
+				odh = dh;
 				dh *= 1.0f - AIR_VADV;
-				dh += AIR_VADV*(1.0f-tx)*(1.0f-ty)*hv[j][i];
-				dh += AIR_VADV*tx*(1.0f-ty)*hv[j][i+1];
-				dh += AIR_VADV*(1.0f-tx)*ty*hv[j+1][i];
-				dh += AIR_VADV*tx*ty*hv[j+1][i+1];
+				dh += AIR_VADV*(1.0f-tx)*(1.0f-ty)*(bmap_blockairh[j][i] ? odh : hv[j][i]);
+				dh += AIR_VADV*tx*(1.0f-ty)*(bmap_blockairh[j][i+1] ? odh : hv[j][i+1]);
+				dh += AIR_VADV*(1.0f-tx)*ty*(bmap_blockairh[j+1][i] ? odh : hv[j+1][i]);
+				dh += AIR_VADV*tx*ty*(bmap_blockairh[j+1][i+1] ? odh : hv[j+1][i+1]);
 			}
+			pv[y][x] += (dh-hv[y][x])/5000.0f;
 			if(!gravityMode){ //Vertical gravity only for the time being
-				float airdiff = dh-hv[y][x];
-				pv[y][x] += airdiff/5000.0f;
-				if(airdiff>0)	
+				float airdiff = hv[y-1][x]-hv[y][x];
+				if(airdiff>0 && !bmap_blockairh[y-1][x])
 					vy[y][x] -= airdiff/5000.0f;
 			}
 			ohv[y][x] = dh;
@@ -133,255 +129,12 @@ void update_airh(void)
 	}
 	memcpy(hv, ohv, sizeof(hv));
 }
-void bilinear_interpolation(float *src, float *dst, int sw, int sh, int rw, int rh)
-{
-	int y, x, fxceil, fyceil;
-	float fx, fy, fyc, fxc;
-	double intp;
-	float tr, tl, br, bl;
-	//Bilinear interpolation for upscaling
-	for (y=0; y<rh; y++)
-		for (x=0; x<rw; x++)
-		{
-			fx = ((float)x)*((float)sw)/((float)rw);
-			fy = ((float)y)*((float)sh)/((float)rh);
-			fxc = modf(fx, &intp);
-			fyc = modf(fy, &intp);
-			fxceil = (int)ceil(fx);
-			fyceil = (int)ceil(fy);
-			if (fxceil>=sw) fxceil = sw-1;
-			if (fyceil>=sh) fyceil = sh-1;
-			tr = src[sw*(int)floor(fy)+fxceil];
-			tl = src[sw*(int)floor(fy)+(int)floor(fx)];
-			br = src[sw*fyceil+fxceil];
-			bl = src[sw*fyceil+(int)floor(fx)];
-			dst[rw*y+x] = ((tl*(1.0f-fxc))+(tr*(fxc)))*(1.0f-fyc) + ((bl*(1.0f-fxc))+(br*(fxc)))*(fyc);				
-		}
-}
-
-#ifdef GRAVFFT
-int grav_fft_status = 0;
-float *th_ptgravx, *th_ptgravy, *th_gravmapbig, *th_gravxbig, *th_gravybig;
-fftwf_complex *th_ptgravxt, *th_ptgravyt, *th_gravmapbigt, *th_gravxbigt, *th_gravybigt;
-fftwf_plan plan_gravmap, plan_gravx_inverse, plan_gravy_inverse;
-
-void grav_fft_init()
-{
-	int xblock2 = XRES/CELL*2;
-	int yblock2 = YRES/CELL*2;
-	int x, y, fft_tsize = (xblock2/2+1)*yblock2;
-	float distance, scaleFactor;
-	fftwf_plan plan_ptgravx, plan_ptgravy;
-	if (grav_fft_status) return;
-
-	//use fftw malloc function to ensure arrays are aligned, to get better performance
-	th_ptgravx = fftwf_malloc(xblock2*yblock2*sizeof(float));
-	th_ptgravy = fftwf_malloc(xblock2*yblock2*sizeof(float));
-	th_ptgravxt = fftwf_malloc(fft_tsize*sizeof(fftwf_complex));
-	th_ptgravyt = fftwf_malloc(fft_tsize*sizeof(fftwf_complex));
-	th_gravmapbig = fftwf_malloc(xblock2*yblock2*sizeof(float));
-	th_gravmapbigt = fftwf_malloc(fft_tsize*sizeof(fftwf_complex));
-	th_gravxbig = fftwf_malloc(xblock2*yblock2*sizeof(float));
-	th_gravybig = fftwf_malloc(xblock2*yblock2*sizeof(float));
-	th_gravxbigt = fftwf_malloc(fft_tsize*sizeof(fftwf_complex));
-	th_gravybigt = fftwf_malloc(fft_tsize*sizeof(fftwf_complex));
-
-	//select best algorithm, could use FFTW_PATIENT or FFTW_EXHAUSTIVE but that increases the time taken to plan, and I don't see much increase in execution speed
-	plan_ptgravx = fftwf_plan_dft_r2c_2d(yblock2, xblock2, th_ptgravx, th_ptgravxt, FFTW_MEASURE);
-	plan_ptgravy = fftwf_plan_dft_r2c_2d(yblock2, xblock2, th_ptgravy, th_ptgravyt, FFTW_MEASURE);
-	plan_gravmap = fftwf_plan_dft_r2c_2d(yblock2, xblock2, th_gravmapbig, th_gravmapbigt, FFTW_MEASURE);
-	plan_gravx_inverse = fftwf_plan_dft_c2r_2d(yblock2, xblock2, th_gravxbigt, th_gravxbig, FFTW_MEASURE);
-	plan_gravy_inverse = fftwf_plan_dft_c2r_2d(yblock2, xblock2, th_gravybigt, th_gravybig, FFTW_MEASURE);
-
-	//(XRES/CELL)*(YRES/CELL)*4 is size of data array, scaling needed because FFTW calculates an unnormalized DFT
-	scaleFactor = -M_GRAV/((XRES/CELL)*(YRES/CELL)*4);
-	//calculate velocity map caused by a point mass
-	for (y=0; y<yblock2; y++)
-	{
-		for (x=0; x<xblock2; x++)
-		{
-			if (x==XRES/CELL && y==YRES/CELL) continue;
-			distance = sqrtf(pow(x-(XRES/CELL), 2) + pow(y-(YRES/CELL), 2));
-			th_ptgravx[y*xblock2+x] = scaleFactor*(x-(XRES/CELL)) / pow(distance, 3);
-			th_ptgravy[y*xblock2+x] = scaleFactor*(y-(YRES/CELL)) / pow(distance, 3);
-		}
-	}
-	th_ptgravx[yblock2*xblock2/2+xblock2/2] = 0.0f;
-	th_ptgravy[yblock2*xblock2/2+xblock2/2] = 0.0f;
-
-	//transform point mass velocity maps
-	fftwf_execute(plan_ptgravx);
-	fftwf_execute(plan_ptgravy);
-	fftwf_destroy_plan(plan_ptgravx);
-	fftwf_destroy_plan(plan_ptgravy);
-	fftwf_free(th_ptgravx);
-	fftwf_free(th_ptgravy);
-
-	//clear padded gravmap
-	memset(th_gravmapbig,0,xblock2*yblock2*sizeof(float));
-
-	grav_fft_status = 1;
-}
-
-void grav_fft_cleanup()
-{
-	if (!grav_fft_status) return;
-	fftwf_free(th_ptgravxt);
-	fftwf_free(th_ptgravyt);
-	fftwf_free(th_gravmapbig);
-	fftwf_free(th_gravmapbigt);
-	fftwf_free(th_gravxbig);
-	fftwf_free(th_gravybig);
-	fftwf_free(th_gravxbigt);
-	fftwf_free(th_gravybigt);
-	fftwf_destroy_plan(plan_gravmap);
-	fftwf_destroy_plan(plan_gravx_inverse);
-	fftwf_destroy_plan(plan_gravy_inverse);
-	grav_fft_status = 0;
-}
-
-void update_grav()
-{
-	int x, y, changed = 0;
-	for (y=0; y<YRES/CELL; y++)
-	{
-		if(changed)
-			break;
-		for (x=0; x<XRES/CELL; x++)
-		{
-			if(th_ogravmap[y][x]!=th_gravmap[y][x]){
-				changed = 1;
-				break;
-			}
-		}
-	}
-	if(changed)
-	{
-		int xblock2 = XRES/CELL*2, yblock2 = YRES/CELL*2;
-		int i, fft_tsize = (xblock2/2+1)*yblock2;
-		float mr, mc, pr, pc, gr, gc;
-		if (!grav_fft_status) grav_fft_init();
-
-		//copy gravmap into padded gravmap array
-		for (y=0; y<YRES/CELL; y++)
-		{
-			for (x=0; x<XRES/CELL; x++)
-			{
-				th_gravmapbig[(y+YRES/CELL)*xblock2+XRES/CELL+x] = th_gravmap[y][x];
-			}
-		}
-		//transform gravmap
-		fftwf_execute(plan_gravmap);
-		//do convolution (multiply the complex numbers)
-		for (i=0; i<fft_tsize; i++)
-		{
-			mr = th_gravmapbigt[i][0];
-			mc = th_gravmapbigt[i][1];
-			pr = th_ptgravxt[i][0];
-			pc = th_ptgravxt[i][1];
-			gr = mr*pr-mc*pc;
-			gc = mr*pc+mc*pr;
-			th_gravxbigt[i][0] = gr;
-			th_gravxbigt[i][1] = gc;
-			pr = th_ptgravyt[i][0];
-			pc = th_ptgravyt[i][1];
-			gr = mr*pr-mc*pc;
-			gc = mr*pc+mc*pr;
-			th_gravybigt[i][0] = gr;
-			th_gravybigt[i][1] = gc;
-		}
-		//inverse transform, and copy from padded arrays into normal velocity maps
-		fftwf_execute(plan_gravx_inverse);
-		fftwf_execute(plan_gravy_inverse);
-		for (y=0; y<YRES/CELL; y++)
-		{
-			for (x=0; x<XRES/CELL; x++)
-			{
-				th_gravx[y][x] = th_gravxbig[y*xblock2+x];
-				th_gravy[y][x] = th_gravybig[y*xblock2+x];
-				th_gravp[y][x] = sqrtf(pow(th_gravxbig[y*xblock2+x],2)+pow(th_gravybig[y*xblock2+x],2));
-			}
-		}
-	}
-	memcpy(th_ogravmap, th_gravmap, sizeof(th_gravmap));
-	bilinear_interpolation(th_gravy, th_gravyf, XRES/CELL, YRES/CELL, XRES, YRES);
-	bilinear_interpolation(th_gravx, th_gravxf, XRES/CELL, YRES/CELL, XRES, YRES);
-	bilinear_interpolation(th_gravp, th_gravpf, XRES/CELL, YRES/CELL, XRES, YRES);
-}
-
-#else
-// gravity without fast Fourier transforms
-
-void update_grav(void)
-{
-	int x, y, i, j, changed = 0;
-	float val, distance;
-#ifndef GRAV_DIFF
-	//Find any changed cells
-	for (i=0; i<YRES/CELL; i++)
-	{
-		if(changed)
-			break;
-		for (j=0; j<XRES/CELL; j++)
-		{
-			if(th_ogravmap[i][j]!=th_gravmap[i][j]){
-				changed = 1;
-				break;
-			}
-		}
-	}
-	if(!changed)
-		goto fin;
-	memset(th_gravy, 0, sizeof(th_gravy));
-	memset(th_gravx, 0, sizeof(th_gravx));
-#endif
-	for (i = 0; i < YRES / CELL; i++) {
-		for (j = 0; j < XRES / CELL; j++) {
-#ifdef GRAV_DIFF
-			if (th_ogravmap[i][j] != th_gravmap[i][j])
-			{
-#else
-			if (th_gravmap[i][j] > 0.0001f || th_gravmap[i][j]<-0.0001f) //Only calculate with populated or changed cells.
-			{
-#endif
-				for (y = 0; y < YRES / CELL; y++) {
-					for (x = 0; x < XRES / CELL; x++) {
-						if (x == j && y == i)//Ensure it doesn't calculate with itself
-							continue;
-						distance = sqrt(pow(j - x, 2) + pow(i - y, 2));
-#ifdef GRAV_DIFF
-						val = th_gravmap[i][j] - th_ogravmap[i][j];
-#else
-						val = th_gravmap[i][j];
-#endif
-						th_gravx[y][x] += M_GRAV * val * (j - x) / pow(distance, 3);
-						th_gravy[y][x] += M_GRAV * val * (i - y) / pow(distance, 3);
-						th_gravp[y][x] += M_GRAV * val / pow(distance, 2);
-					}
-				}
-			}
-		}
-	}
-	bilinear_interpolation(th_gravy, th_gravyf, XRES/CELL, YRES/CELL, XRES, YRES);
-	bilinear_interpolation(th_gravx, th_gravxf, XRES/CELL, YRES/CELL, XRES, YRES);
-	bilinear_interpolation(th_gravp, th_gravpf, XRES/CELL, YRES/CELL, XRES, YRES);
-fin:
-	memcpy(th_ogravmap, th_gravmap, sizeof(th_gravmap));
-	memset(th_gravmap, 0, sizeof(th_gravmap));
-}
-#endif
-
 
 void update_air(void)
 {
 	int x, y, i, j;
 	float dp, dx, dy, f, tx, ty;
-
-	for (y=0; y<YRES/CELL; y++)
-		for (x=0; x<XRES/CELL; x++)
-		{
-			bmap_blockair[y][x] = (bmap[y][x]==WL_WALL || bmap[y][x]==WL_WALLELEC || (bmap[y][x]==WL_EWALL && !emap[y][x]));
-		}
+	
 	if (airMode != 4) { //airMode 4 is no air/pressure update
 
 		for (i=0; i<YRES/CELL; i++) //reduces pressure/velocity on the edges every frame

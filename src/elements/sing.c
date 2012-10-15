@@ -1,3 +1,18 @@
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <element.h>
 
 int update_SING(UPDATE_FUNC_ARGS) {
@@ -15,21 +30,21 @@ int update_SING(UPDATE_FUNC_ARGS) {
 		if (y+CELL<YRES)
 			pv[y/CELL+1][x/CELL+1] += 0.1f*(singularity-pv[y/CELL+1][x/CELL+1]);
 	}
-	if (y+CELL>0 && pv[y/CELL-1][x/CELL]<singularity)
+	if (y-CELL>=0 && pv[y/CELL-1][x/CELL]<singularity)
 		pv[y/CELL-1][x/CELL] += 0.1f*(singularity-pv[y/CELL-1][x/CELL]);
-	if (x+CELL>0)
+	if (x-CELL>=0)
 	{
 		pv[y/CELL][x/CELL-1] += 0.1f*(singularity-pv[y/CELL][x/CELL-1]);
-		if (y+CELL>0)
+		if (y-CELL>=0)
 			pv[y/CELL-1][x/CELL-1] += 0.1f*(singularity-pv[y/CELL-1][x/CELL-1]);
 	}
 	if (parts[i].life<1) {
 		//Pop!
-		for (rx=-2; rx<3; rx++) {
+		for (rx=-1; rx<2; rx++) {
 			crx = (x/CELL)+rx;
-			for (ry=-2; ry<3; ry++) {
+			for (ry=-1; ry<2; ry++) {
 				cry = (y/CELL)+ry;
-				if (cry > 0 && crx > 0 && crx < (XRES/CELL) && cry < (YRES/CELL)) {
+				if (cry >= 0 && crx >= 0 && crx < (XRES/CELL) && cry < (YRES/CELL)) {
 					pv[cry][crx] += (float)parts[i].tmp;
 				}
 			}
@@ -40,10 +55,17 @@ int update_SING(UPDATE_FUNC_ARGS) {
 		spawncount = spawncount*spawncount*M_PI;
 		for (j=0;j<spawncount;j++)
 		{
-			if (rand()%2) {
-				nb = create_part(-3, x, y, PT_PHOT);
-			} else {
-				nb = create_part(-3, x, y, PT_NEUT);
+			switch(rand()%3)
+			{
+				case 0:
+					nb = create_part(-3, x, y, PT_PHOT);
+					break;
+				case 1:
+					nb = create_part(-3, x, y, PT_NEUT);
+					break;
+				case 2:
+					nb = create_part(-3, x, y, PT_ELEC);
+					break;
 			}
 			if (nb!=-1) {
 				parts[nb].life = (rand()%300);
@@ -64,7 +86,7 @@ int update_SING(UPDATE_FUNC_ARGS) {
 			if (x+rx>=0 && y+ry>0 && x+rx<XRES && y+ry<YRES && (rx || ry))
 			{
 				r = pmap[y+ry][x+rx];
-				if ((r>>8)>=NPART || !r)
+				if (!r)
 					continue;
 				if ((r&0xFF)!=PT_DMND&&33>=rand()/(RAND_MAX/100)+1)
 				{

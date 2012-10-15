@@ -1,3 +1,20 @@
+/**
+ * Powder Toy - user interface
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #ifdef MACOSX
 #include <CoreFoundation/CFString.h>
 #endif
@@ -15,6 +32,7 @@
 #include <interface.h>
 #include <misc.h>
 #include <console.h>
+#include "gravity.h"
 #include <images.h>
 #if defined(WIN32) && !defined(__GNUC__)
 #include <io.h>
@@ -24,9 +42,11 @@
 #ifdef PYCONSOLE
 #include <pythonconsole.h>
 #endif
+#include <powdergraphics.h>
+#include "save.h"
 
 SDLMod sdl_mod;
-int sdl_key, sdl_rkey, sdl_wheel, sdl_caps=0, sdl_ascii, sdl_zoom_trig=0;
+int sdl_key, sdl_rkey, sdl_wheel, sdl_ascii, sdl_zoom_trig=0;
 #if (defined(LIN32) || defined(LIN64)) && defined(SDL_VIDEO_DRIVER_X11)
 SDL_SysWMinfo sdl_wminfo;
 Atom XA_CLIPBOARD, XA_TARGETS;
@@ -90,12 +110,18 @@ int drawgrav_enable = 0;
 void menu_count(void)//puts the number of elements in each section into .itemcount
 {
 	int i=0;
+	for (i=0;i<SC_TOTAL;i++)
+	{
+		msections[i].itemcount = 0;
+	}
 	msections[SC_LIFE].itemcount = NGOLALT;
 	msections[SC_WALL].itemcount = UI_WALLCOUNT-4;
-	msections[SC_SPECIAL].itemcount = 7;
 	for (i=0; i<PT_NUM; i++)
 	{
-		msections[ptypes[i].menusection].itemcount+=ptypes[i].menu;
+		if (ptypes[i].menusection<SC_TOTAL)
+		{
+			msections[ptypes[i].menusection].itemcount+=ptypes[i].menu;
+		}
 	}
 
 }
@@ -141,15 +167,17 @@ void add_sign_ui(pixel *vid_buf, int mx, int my)
 	int x0=(XRES-192)/2,y0=(YRES-80)/2,b=1,bq;
 	ui_edit ed;
 
+	// if currently moving a sign, stop doing so
+	if (MSIGN!=-1)
+	{
+		MSIGN = -1;
+		return;
+	}
+
 	// check if it is an existing sign
 	for (i=0; i<MAXSIGNS; i++)
 		if (signs[i].text[0])
 		{
-			if (i == MSIGN)
-			{
-				MSIGN = -1;
-				return;
-			}
 			get_sign_pos(i, &x, &y, &w, &h);
 			if (mx>=x && mx<=x+w && my>=y && my<=y+h)
 				break;
@@ -173,7 +201,7 @@ void add_sign_ui(pixel *vid_buf, int mx, int my)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -194,9 +222,7 @@ void add_sign_ui(pixel *vid_buf, int mx, int my)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		drawrect(vid_buf, x0, y0, 192, 80, 192, 192, 192, 255);
 		clearrect(vid_buf, x0, y0, 192, 80);
@@ -226,7 +252,9 @@ void add_sign_ui(pixel *vid_buf, int mx, int my)
 
 		drawtext(vid_buf, x0+5, y0+69, "OK", 255, 255, 255, 255);
 		drawrect(vid_buf, x0, y0+64, 192, 16, 192, 192, 192, 255);
-
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		ui_edit_process(mx, my, b, &ed);
@@ -419,7 +447,7 @@ void ui_edit_process(int mx, int my, int mb, ui_edit *ed)
 				int pl = strlen(paste);
 				if ((textwidth(str)+textwidth(paste) > ed->w-14 && !ed->multiline) || (pl+strlen(ed->str)>255) || (float)(((textwidth(str)+textwidth(paste))/(ed->w-14)*12) > ed->h && ed->multiline))
 					break;
-				memmove(ed->str+ed->cursor+pl, ed->str+ed->cursor, l+pl-ed->cursor);
+				memmove(ed->str+ed->cursor+pl, ed->str+ed->cursor, l-ed->cursor+1);
 				memcpy(ed->str+ed->cursor,paste,pl);
 				ed->cursor += pl;
 				break;
@@ -462,6 +490,99 @@ void ui_edit_process(int mx, int my, int mb, ui_edit *ed)
 	}
 }
 
+void ui_list_process(pixel * vid_buf, int mx, int my, int mb, ui_list *ed)
+{
+	int i, ystart, selected = 0;
+	if(ed->selected > ed->count || ed->selected < -1)
+	{
+		ed->selected = -1;
+	}
+	if(mx > ed->x && mx < ed->x+ed->w && my > ed->y && my < ed->y+ed->h)
+	{
+		ed->focus = 1;
+		if(mb)
+		{
+			ystart = ed->y-(ed->count*8);
+			if(ystart < 5)
+				ystart = 5;
+			while (!sdl_poll())
+			{
+				mb = mouse_get_state(&mx, &my);
+				if (!mb)
+					break;
+			}
+
+			while (!sdl_poll() && !selected)
+			{
+				mb = mouse_get_state(&mx, &my);
+				for(i = 0; i < ed->count; i++)
+				{
+					if(mx > ed->x && mx < ed->x+ed->w && my > (ystart + i*16) && my < (ystart + i * 16) + 16)
+					{
+						if(mb){
+							ed->selected = i;
+							selected = 1;
+						}
+						fillrect(vid_buf, ed->x, ystart + i * 16, ed->w, 16, 255, 255, 255, 25);
+						drawtext(vid_buf, ed->x + 4, ystart + i * 16 + 5, ed->items[i], 255, 255, 255, 255);
+					}
+					else
+					{
+						drawtext(vid_buf, ed->x + 4, ystart + i * 16 + 5, ed->items[i], 192, 192, 192, 255);
+					}
+					draw_line(vid_buf, ed->x, ystart + i * 16, ed->x+ed->w, ystart + i * 16, 128, 128, 128, XRES+BARSIZE);
+				}
+				drawrect(vid_buf, ed->x, ystart, ed->w, ed->count*16, 255, 255, 255, 255);
+#ifdef OGLR
+				clearScreen(1.0f);
+#endif
+				sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
+				clearrect(vid_buf, ed->x-2, ystart-2, ed->w+4, (ed->count*16)+4);
+
+				if(!selected && mb)
+					break;
+			}
+			while (!sdl_poll())
+			{
+				mb = mouse_get_state(&mx, &my);
+				if (!mb)
+					break;
+			}
+			
+			if(ed->selected!=-1)
+				strcpy(ed->str, ed->items[ed->selected]);
+		}
+	}
+	else
+	{
+		ed->focus = 0;
+	}
+}
+
+void ui_list_draw(pixel *vid_buf, ui_list *ed)
+{
+	if(ed->selected > ed->count || ed->selected < -1)
+	{
+		ed->selected = -1;
+	}
+	if (ed->focus)
+	{
+		drawrect(vid_buf, ed->x, ed->y, ed->w, ed->h, 255, 255, 255, 255);
+	}
+	else
+	{
+		drawrect(vid_buf, ed->x, ed->y, ed->w, ed->h, 192, 192, 192, 255);
+	}
+	if(ed->selected!=-1)
+	{
+		drawtext(vid_buf, ed->x+4, ed->y+5, ed->items[ed->selected], 255, 255, 255, 255);
+	}
+	else
+	{
+		drawtext(vid_buf, ed->x+4, ed->y+5, ed->def, 192, 192, 192, 255);
+	}
+}
+
 void ui_checkbox_draw(pixel *vid_buf, ui_checkbox *ed)
 {
 	int w = 12;
@@ -480,6 +601,58 @@ void ui_checkbox_draw(pixel *vid_buf, ui_checkbox *ed)
 }
 
 void ui_checkbox_process(int mx, int my, int mb, int mbq, ui_checkbox *ed)
+{
+	int w = 12;
+
+	if (mb && !mbq)
+	{
+		if (mx>=ed->x && mx<=ed->x+w && my>=ed->y && my<=ed->y+w)
+		{
+			ed->checked = (ed->checked)?0:1;
+		}
+	}
+	else
+	{
+		if (mx>=ed->x && mx<=ed->x+w && my>=ed->y && my<=ed->y+w)
+		{
+			ed->focus = 1;
+		}
+		else
+		{
+			ed->focus = 0;
+		}
+	}
+}
+
+void ui_radio_draw(pixel *vid_buf, ui_checkbox *ed)
+{
+	if (ed->checked)
+	{
+		int nx, ny;
+		for(nx=-6; nx<=6; nx++)
+			for(ny=-6; ny<=6; ny++)
+				if((nx*nx+ny*ny)<10)
+					blendpixel(vid_buf, ed->x+6+nx, ed->y+6+ny, 128, 128, 128, 255);
+	}
+	if (ed->focus)
+	{
+		int nx, ny;
+		for(nx=-6; nx<=6; nx++)
+			for(ny=-6; ny<=6; ny++)
+				if((nx*nx+ny*ny)<40 && (nx*nx+ny*ny)>28)
+					blendpixel(vid_buf, ed->x+6+nx, ed->y+6+ny, 255, 255, 255, 255);
+	}
+	else
+	{
+		int nx, ny;
+		for(nx=-6; nx<=6; nx++)
+			for(ny=-6; ny<=6; ny++)
+				if((nx*nx+ny*ny)<40 && (nx*nx+ny*ny)>28)
+					blendpixel(vid_buf, ed->x+6+nx, ed->y+6+ny, 128, 128, 128, 255);
+	}
+}
+
+void ui_radio_process(int mx, int my, int mb, int mbq, ui_checkbox *ed)
 {
 	int w = 12;
 
@@ -648,7 +821,7 @@ void draw_svf_ui(pixel *vid_buf, int alternate)// all the buttons at the bottom
 	}
 
 	// the reload button
-	c = (svf_open || svf_fileopen) ? 255 : 128;
+	c = (svf_last) ? 255 : 128;
 	drawtext(vid_buf, 23, YRES+(MENUSIZE-14), "\x91", c, c, c, 255);
 	drawrect(vid_buf, 19, YRES+(MENUSIZE-16), 16, 14, c, c, c, 255);
 
@@ -724,58 +897,15 @@ void draw_svf_ui(pixel *vid_buf, int alternate)// all the buttons at the bottom
 	}
 
 	//The simulation options button, used to be the heat sim button
-	/*if (!legacy_enable)
-	{
-		fillrect(vid_buf, XRES-160+BARSIZE, YRES+(MENUSIZE-17), 16, 16, 255, 255, 255, 255);
-		drawtext(vid_buf, XRES-154+BARSIZE, YRES+(MENUSIZE-13), "\xBE", 255, 0, 0, 255);
-		drawtext(vid_buf, XRES-154+BARSIZE, YRES+(MENUSIZE-13), "\xBD", 0, 0, 0, 255);
-	}
-	else*/
 	{
 		drawtext(vid_buf, XRES-156+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xCF", 255, 255, 255, 255);
 		drawrect(vid_buf, XRES-159+BARSIZE/*494*/, YRES+(MENUSIZE-16), 14, 14, 255, 255, 255, 255);
 	}
 
 	//the view mode button
-	switch (cmode)
-	{
-	case CM_VEL:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x98", 128, 160, 255, 255);
-		break;
-	case CM_PRESS:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x99", 255, 212, 32, 255);
-		break;
-	case CM_PERS:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x9A", 212, 212, 212, 255);
-		break;
-	case CM_FIRE:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x9B", 255, 0, 0, 255);
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x9C", 255, 255, 64, 255);
-		break;
-	case CM_BLOB:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xBF", 55, 255, 55, 255);
-		break;
-	case CM_HEAT:
-		drawtext(vid_buf, XRES-27+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xBE", 255, 0, 0, 255);
-		drawtext(vid_buf, XRES-27+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xBD", 255, 255, 255, 255);
-		break;
-	case CM_FANCY:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xC4", 100, 150, 255, 255);
-		break;
-	case CM_NOTHING:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x00", 100, 150, 255, 255);
-		break;
-	case CM_CRACK:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xD4", 255, 55, 55, 255);
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xD5", 55, 255, 55, 255);
-		break;
-	case CM_GRAD:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\xD3", 255, 50, 255, 255);
-		break;
-	case CM_LIFE:
-		drawtext(vid_buf, XRES-29+BARSIZE/*481*/, YRES+(MENUSIZE-13), "\x00", 255, 50, 255, 255);
-		break;
-	}
+	addchar(vid_buf, XRES-29+BARSIZE, YRES+(MENUSIZE-13), 0xD8, 255, 0, 0, 255);
+	addchar(vid_buf, XRES-29+BARSIZE, YRES+(MENUSIZE-13), 0xD9, 0, 255, 0, 255);
+	addchar(vid_buf, XRES-29+BARSIZE, YRES+(MENUSIZE-13), 0xDA, 0, 0, 255, 255);
 	drawrect(vid_buf, XRES-32+BARSIZE/*478*/, YRES+(MENUSIZE-16), 14, 14, 255, 255, 255, 255);
 
 	// special icons for admin/mods
@@ -812,7 +942,7 @@ void error_ui(pixel *vid_buf, int err, char *txt)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -820,9 +950,7 @@ void error_ui(pixel *vid_buf, int err, char *txt)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		clearrect(vid_buf, x0-2, y0-2, 244, 52+textheight);
 		drawrect(vid_buf, x0, y0, 240, 48+textheight, 192, 192, 192, 255);
@@ -833,6 +961,9 @@ void error_ui(pixel *vid_buf, int err, char *txt)
 		drawtextwrap(vid_buf, x0+8, y0+26, 224, msg, 255, 255, 255, 255);
 		drawtext(vid_buf, x0+5, y0+textheight+37, "Dismiss", 255, 255, 255, 255);
 		drawrect(vid_buf, x0, y0+textheight+32, 240, 16, 192, 192, 192, 255);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		if (b && !bq && mx>=x0 && mx<x0+240 && my>=y0+textheight+32 && my<=y0+textheight+48)
@@ -848,7 +979,208 @@ void error_ui(pixel *vid_buf, int err, char *txt)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
+		if (!b)
+			break;
+	}
+}
+
+typedef struct int_pair
+{
+	int first, second;
+} int_pair;
+
+int int_pair_cmp (const void * a, const void * b)
+{
+	int_pair *ap = a;
+	int_pair *bp = a;
+	return ( ap->first - bp->first );
+}
+
+void element_search_ui(pixel *vid_buf, int * slp, int * srp)
+{
+	int windowHeight = 300, windowWidth = 240;
+	int x0 = (XRES-windowWidth)/2, y0 = (YRES-windowHeight)/2, b = 1, bq, mx, my;
+	int toolx = 0, tooly = 0, i, xoff, yoff, c, found;
+	char tempCompare[512];
+	char tempString[512];
+	int_pair tempInts[PT_NUM];
+	ui_edit ed;
+	int selectedl = -1;
+	int selectedr = -1;
+	int firstResult = -1, hover = -1;
+
+	ed.x = x0+12;
+	ed.y = y0+30;
+	ed.w = windowWidth - 20;
+	ed.nx = 1;
+	ed.def = "[element name]";
+	ed.focus = 1;
+	ed.hide = 0;
+	ed.cursor = 0;
+	ed.multiline = 0;
+	ed.str[0] = 0;
+
+
+	while (!sdl_poll())
+	{
+		bq = b;
+		b = mouse_get_state(&mx, &my);
+
+		clearrect(vid_buf, x0-2, y0-2, windowWidth+4, windowHeight+4);
+		drawrect(vid_buf, x0, y0, windowWidth, windowHeight, 192, 192, 192, 255);
+		
+		drawtext(vid_buf, x0+8, y0+8, "Element Search", 255, 255, 255, 255);
+
+		drawrect(vid_buf, ed.x-4, ed.y-5, ed.w+4, 16, 192, 192, 192, 255);
+		ui_edit_draw(vid_buf, &ed);
+		ui_edit_process(mx, my, b, &ed);
+		
+		drawrect(vid_buf, ed.x-4, (ed.y-5)+20, ed.w+4, windowHeight-((ed.y-5)), 192, 192, 192, 255);
+		xoff = (ed.x-4)+6;
+		yoff = ((ed.y-5)+20)+4;
+		toolx = 0;
+		tooly = 0;
+		
+		drawtext(vid_buf, xoff+toolx+4, yoff+tooly+3, "Matches:", 255, 255, 255, 180);
+		draw_line(vid_buf, xoff+toolx+2, yoff+tooly+14, xoff+toolx+5+(ed.w-16), yoff+tooly+14, 180, 180, 180, XRES+BARSIZE);
+		tooly += 17;
+		
+		//Covert input to lower case
+		c = 0;
+		while (ed.str[c]) { tempString[c] = tolower(ed.str[c]); c++; } tempString[c] = 0;
+		
+		firstResult = -1;
+		hover = -1;
+		for(i = 0; i < PT_NUM; i++)
+		{
+			c = 0;
+			while (ptypes[i].name[c]) { tempCompare[c] = tolower(ptypes[i].name[c]); c++; } tempCompare[c] = 0;
+			if(strstr(tempCompare, tempString)!=0 && ptypes[i].enabled)
+			{
+				if(firstResult==-1)
+					firstResult = i;
+				toolx += draw_tool_xy(vid_buf, toolx+xoff, tooly+yoff, i, ptypes[i].pcolors)+5;
+				if (!bq && mx>=xoff+toolx-32 && mx<xoff+toolx && my>=yoff+tooly && my<yoff+tooly+15)
+				{
+					drawrect(vid_buf, xoff+toolx-32, yoff+tooly-1, 29, 17, 255, 55, 55, 255);
+					hover = i;
+				}
+				else if (i==selectedl || i==*slp)
+				{
+					drawrect(vid_buf, xoff+toolx-32, yoff+tooly-1, 29, 17, 255, 55, 55, 255);
+				}
+				else if (i==selectedr || i==*srp)
+				{
+					drawrect(vid_buf, xoff+toolx-32, yoff+tooly-1, 29, 17, 55, 55, 255, 255);
+				}
+				if(toolx > ed.w-4)
+				{
+					tooly += 18;
+					toolx = 0;
+				}
+				if(tooly>windowHeight-((ed.y-5)+20))
+					break;;
+			}
+		}
+		
+		if(toolx>0)
+		{
+			toolx = 0;
+			tooly += 18;
+		}
+		
+		if(tooly<windowHeight-((ed.y-5)+20))
+		{
+			drawtext(vid_buf, xoff+toolx+4, yoff+tooly+3, "Related:", 255, 255, 255, 180);
+			draw_line(vid_buf, xoff+toolx+2, yoff+tooly+14, xoff+toolx+5+(ed.w-16), yoff+tooly+14, 180, 180, 180, XRES+BARSIZE);
+			tooly += 17;
+			
+			found = 0;
+			for(i = 0; i < PT_NUM; i++)
+			{
+				c = 0;
+				while (ptypes[i].descs[c]) { tempCompare[c] = tolower(ptypes[i].descs[c]); c++; } tempCompare[c] = 0;
+				if(strstr(tempCompare, tempString)!=0 && ptypes[i].enabled)
+				{
+					tempInts[found].first = strstr(tempCompare, tempString);
+					tempInts[found++].second = i;
+				}
+			}
+			
+			qsort(tempInts, found, sizeof(int_pair), int_pair_cmp);
+			
+			for(i = 0; i < found; i++)
+			{
+				if(firstResult==-1)
+					firstResult = tempInts[i].second;
+				toolx += draw_tool_xy(vid_buf, toolx+xoff, tooly+yoff, tempInts[i].second, ptypes[tempInts[i].second].pcolors)+5;
+				if (!bq && mx>=xoff+toolx-32 && mx<xoff+toolx && my>=yoff+tooly && my<yoff+tooly+15)
+				{
+					drawrect(vid_buf, xoff+toolx-32, yoff+tooly-1, 29, 17, 255, 55, 55, 255);
+					hover = tempInts[i].second;
+				}
+				else if (tempInts[i].second==selectedl || tempInts[i].second==*slp)
+				{
+					drawrect(vid_buf, xoff+toolx-32, yoff+tooly-1, 29, 17, 255, 55, 55, 255);
+				}
+				else if (tempInts[i].second==selectedr || tempInts[i].second==*srp)
+				{
+					drawrect(vid_buf, xoff+toolx-32, yoff+tooly-1, 29, 17, 55, 55, 255, 255);
+				}
+				if(toolx > ed.w-4)
+				{
+					tooly += 18;
+					toolx = 0;
+				}
+				if(tooly>windowHeight-((ed.y-5)+18))
+					break;
+			}
+		}
+		
+		if(b==1 && hover!=-1)
+		{
+			selectedl = hover;
+			break;
+		}
+		if(b==4 && hover!=-1)
+		{
+			selectedr = hover;
+			break;
+		}
+		
+		drawtext(vid_buf, x0+5, y0+windowHeight-12, "Dismiss", 255, 255, 255, 255);
+		drawrect(vid_buf, x0, y0+windowHeight-16, windowWidth, 16, 192, 192, 192, 255);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
+		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
+
+		if (b && !bq && mx>=x0 && mx<x0+windowWidth && my>=y0+windowHeight-16 && my<=y0+windowHeight)
+			break;
+
+		if (sdl_key==SDLK_RETURN)
+		{
+			if(selectedl==-1)
+				selectedl = firstResult;
+			break;
+		}
+		if (sdl_key==SDLK_ESCAPE)
+		{
+			selectedl = -1;
+			selectedr = -1;
+			break;
+		}
+	}
+
+	if(selectedl!=-1)
+		*slp = selectedl;
+	if(selectedr!=-1)
+		*srp = selectedr;
+	
+	while (!sdl_poll())
+	{
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -878,7 +1210,7 @@ char *input_ui(pixel *vid_buf, char *title, char *prompt, char *text, char *shad
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -886,9 +1218,7 @@ char *input_ui(pixel *vid_buf, char *title, char *prompt, char *text, char *shad
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		clearrect(vid_buf, x0-2, y0-2, xsize+4, ysize+4);
 		drawrect(vid_buf, x0, y0, xsize, ysize, 192, 192, 192, 255);
@@ -903,6 +1233,9 @@ char *input_ui(pixel *vid_buf, char *title, char *prompt, char *text, char *shad
 		drawtext(vid_buf, x0+5, y0+ysize-11, "OK", 255, 255, 255, 255);
 		drawrect(vid_buf, x0, y0+ysize-16, xsize, 16, 192, 192, 192, 255);
 
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		if (b && !bq && mx>=x0 && mx<x0+xsize && my>=y0+ysize-16 && my<=y0+ysize)
@@ -916,11 +1249,212 @@ char *input_ui(pixel *vid_buf, char *title, char *prompt, char *text, char *shad
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
 	return mystrdup(ed.str);
+}
+
+void prop_edit_ui(pixel *vid_buf, int x, int y)
+{
+	pixel * o_vid_buf;
+	float valuef;
+	unsigned char valuec;
+	int valuei;
+	int format;
+	size_t propoffset;
+	char *listitems[] = {"type", "life", "ctype", "temp", "tmp", "tmp2", "vy", "vx", "x", "y", "dcolour"};
+	int listitemscount = 11;
+	int xsize = 244;
+	int ysize = 87;
+	int edity, editx, edit2y, edit2x;
+	int x0=(XRES-xsize)/2,y0=(YRES-MENUSIZE-ysize)/2,b=1,bq,mx,my;
+	ui_list ed;
+	ui_edit ed2;
+
+	edity = y0+25;
+	editx = x0+8;
+	
+	edit2y = y0+50;
+	edit2x = x0+12;
+
+	ed.x = editx;
+	ed.y = edity;
+	ed.w = xsize - 16;
+	ed.h = 16;
+	ed.def = "[property]";
+	ed.selected = -1;
+	ed.items = listitems;
+	ed.count = listitemscount;
+	
+	ed2.x = edit2x;
+	ed2.y = edit2y;
+	ed2.w = xsize - 20;
+	ed2.nx = 1;
+	ed2.def = "[value]";
+	ed2.focus = 0;
+	ed2.hide = 0;
+	ed2.cursor = 0;
+	ed2.multiline = 0;
+	ed2.str[0] = 0;
+	strncpy(ed2.str, "0", 254);
+	strncpy(ed.str, "ctype", 254);
+
+	o_vid_buf = (pixel*)calloc((YRES+MENUSIZE) * (XRES+BARSIZE), PIXELSIZE);
+	if (o_vid_buf)
+		memcpy(o_vid_buf, vid_buf, ((YRES+MENUSIZE) * (XRES+BARSIZE)) * PIXELSIZE);
+	while (!sdl_poll())
+	{
+		b = mouse_get_state(&mx, &my);
+		if (!b)
+			break;
+	}
+
+	while (!sdl_poll())
+	{
+		bq = b;
+		b = mouse_get_state(&mx, &my);
+
+		if (o_vid_buf)
+			memcpy(vid_buf, o_vid_buf, ((YRES+MENUSIZE) * (XRES+BARSIZE)) * PIXELSIZE);
+		clearrect(vid_buf, x0-2, y0-2, xsize+4, ysize+4);
+		drawrect(vid_buf, x0, y0, xsize, ysize, 192, 192, 192, 255);
+		drawtext(vid_buf, x0+8, y0+8, "Change particle property", 160, 160, 255, 255);
+		//drawtext(vid_buf, x0+8, y0+26, prompt, 255, 255, 255, 255);
+		
+		//drawrect(vid_buf, ed.x-4, ed.y-5, ed.w+4, 16, 192, 192, 192, 255);
+		drawrect(vid_buf, ed2.x-4, ed2.y-5, ed2.w+4, 16, 192, 192, 192, 255);
+
+		ui_list_draw(vid_buf, &ed);
+		ui_list_process(vid_buf, mx, my, b, &ed);
+		ui_edit_draw(vid_buf, &ed2);
+		ui_edit_process(mx, my, b, &ed2);
+
+		drawtext(vid_buf, x0+5, y0+ysize-11, "OK", 255, 255, 255, 255);
+		drawrect(vid_buf, x0, y0+ysize-16, xsize, 16, 192, 192, 192, 255);
+
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
+		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
+
+		if (b && !bq && mx>=x0 && mx<x0+xsize && my>=y0+ysize-16 && my<=y0+ysize)
+			break;
+
+		if (sdl_key==SDLK_RETURN)
+			break;
+		if (sdl_key==SDLK_ESCAPE)
+			goto exit;
+	}
+
+	if(ed.selected!=-1)
+	{
+		if (strcmp(ed.str,"type")==0){
+			propoffset = offsetof(particle, type);
+			format = 1;
+		} else if (strcmp(ed.str,"life")==0){
+			propoffset = offsetof(particle, life);
+			format = 0;
+		} else if (strcmp(ed.str,"ctype")==0){
+			propoffset = offsetof(particle, ctype);
+			format = 1;
+		} else if (strcmp(ed.str,"temp")==0){
+			propoffset = offsetof(particle, temp);
+			format = 2;
+		} else if (strcmp(ed.str,"tmp")==0){
+			propoffset = offsetof(particle, tmp);
+			format = 0;
+		} else if (strcmp(ed.str,"tmp2")==0){
+			propoffset = offsetof(particle, tmp2);
+			format = 0;
+		} else if (strcmp(ed.str,"vy")==0){
+			propoffset = offsetof(particle, vy);
+			format = 2;
+		} else if (strcmp(ed.str,"vx")==0){
+			propoffset = offsetof(particle, vx);
+			format = 2;
+		} else if (strcmp(ed.str,"x")==0){
+			propoffset = offsetof(particle, x);
+			format = 2;
+		} else if (strcmp(ed.str,"y")==0){
+			propoffset = offsetof(particle, y);
+			format = 2;
+		} else if (strcmp(ed.str,"dcolour")==0){
+			propoffset = offsetof(particle, dcolour);
+			format = 3;
+		}
+	} else {
+		error_ui(vid_buf, 0, "Invalid property");
+		goto exit;
+	}
+	
+	if(format==0){
+		sscanf(ed2.str, "%d", &valuei);
+		flood_prop(x, y, propoffset, &valuei, format);
+	}
+	if(format==1){
+		int isint = 1, i;
+		//Check if it's an element name
+		for(i = 0; i < strlen(ed2.str); i++)
+		{
+			if(!(ed2.str[i] >= '0' && ed2.str[i] <= '9'))
+			{
+				isint = 0;
+				break;
+			}
+		}
+		if(isint)
+		{
+			sscanf(ed2.str, "%u", &valuei);
+		}
+		else
+		{
+			if(!console_parse_type(ed2.str, &valuei, NULL))
+			{
+				error_ui(vid_buf, 0, "Invalid element name");
+				goto exit;
+			}
+		}
+		valuec = (unsigned char)valuei;
+		flood_prop(x, y, propoffset, &valuec, format);
+	}
+	if(format==2){
+		sscanf(ed2.str, "%f", &valuef);
+		flood_prop(x, y, propoffset, &valuef, format);
+	}
+	if(format==3){
+		int j;
+		unsigned int valueui;
+		if(ed2.str[0] == '#') // #FFFFFFFF
+		{
+			//Convert to lower case
+			for(j = 0; j < strlen(ed2.str); j++)
+				ed2.str[j] = tolower(ed2.str[j]);
+			sscanf(ed2.str, "#%x", &valueui);
+			printf("%s, %u\n", ed2.str, valueui);
+		}
+		else if(ed2.str[0] == '0' && ed2.str[1] == 'x') // 0xFFFFFFFF
+		{
+			//Convert to lower case
+			for(j = 0; j < strlen(ed2.str); j++)
+				ed2.str[j] = tolower(ed2.str[j]);
+			sscanf(ed2.str, "0x%x", &valueui);
+			printf("%s, %u\n", ed2.str, valueui);
+		}
+		else
+		{
+			sscanf(ed2.str, "%d", &valueui);
+		}
+		flood_prop(x, y, propoffset, &valueui, 0);
+	}
+exit:
+	while (!sdl_poll())
+	{
+		b = mouse_get_state(&mx, &my);
+		if (!b)
+			break;
+	}
 }
 
 void info_ui(pixel *vid_buf, char *top, char *txt)
@@ -929,7 +1463,7 @@ void info_ui(pixel *vid_buf, char *top, char *txt)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -937,9 +1471,7 @@ void info_ui(pixel *vid_buf, char *top, char *txt)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		clearrect(vid_buf, x0-2, y0-2, 244, 64);
 		drawrect(vid_buf, x0, y0, 240, 60, 192, 192, 192, 255);
@@ -947,6 +1479,9 @@ void info_ui(pixel *vid_buf, char *top, char *txt)
 		drawtext(vid_buf, x0+8, y0+26, txt, 255, 255, 255, 255);
 		drawtext(vid_buf, x0+5, y0+49, "OK", 255, 255, 255, 255);
 		drawrect(vid_buf, x0, y0+44, 240, 16, 192, 192, 192, 255);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		if (b && !bq && mx>=x0 && mx<x0+240 && my>=y0+44 && my<=y0+60)
@@ -960,7 +1495,7 @@ void info_ui(pixel *vid_buf, char *top, char *txt)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -970,13 +1505,26 @@ void info_box(pixel *vid_buf, char *msg)
 {
 	int w = textwidth(msg)+16;
 	int x0=(XRES-w)/2,y0=(YRES-24)/2;
-
+	
 	clearrect(vid_buf, x0-2, y0-2, w+4, 28);
 	drawrect(vid_buf, x0, y0, w, 24, 192, 192, 192, 255);
 	drawtext(vid_buf, x0+8, y0+8, msg, 192, 192, 240, 255);
 #ifndef RENDERER
+#ifdef OGLR
+	clearScreen(1.0f);
+#endif
 	sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 #endif
+}
+
+void info_box_overlay(pixel *vid_buf, char *msg)
+{
+	int w = textwidth(msg)+16;
+	int x0=(XRES-w)/2,y0=(YRES-24)/2;
+	
+	clearrect(vid_buf, x0-2, y0-2, w+4, 28);
+	drawrect(vid_buf, x0, y0, w, 24, 192, 192, 192, 255);
+	drawtext(vid_buf, x0+8, y0+8, msg, 192, 192, 240, 255);
 }
 
 void copytext_ui(pixel *vid_buf, char *top, char *txt, char *copytxt)
@@ -1008,7 +1556,7 @@ void copytext_ui(pixel *vid_buf, char *top, char *txt, char *copytxt)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1016,9 +1564,7 @@ void copytext_ui(pixel *vid_buf, char *top, char *txt, char *copytxt)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		clearrect(vid_buf, x0-2, y0-2, xsize+4, ysize+4);
 		drawrect(vid_buf, x0, y0, xsize, ysize, 192, 192, 192, 255);
@@ -1031,6 +1577,9 @@ void copytext_ui(pixel *vid_buf, char *top, char *txt, char *copytxt)
 		drawtext(vid_buf, x0+5, y0+ysize-11, "OK", 255, 255, 255, 255);
 		drawrect(vid_buf, x0, y0+ysize-16, xsize, 16, 192, 192, 192, 255);
 
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		if (b && !bq && mx>=x0 && mx<x0+xsize && my>=y0+ysize-16 && my<=y0+ysize)
@@ -1044,20 +1593,26 @@ void copytext_ui(pixel *vid_buf, char *top, char *txt, char *copytxt)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
 }
-
 int confirm_ui(pixel *vid_buf, char *top, char *msg, char *btn)
 {
-	int x0=(XRES-240)/2,y0=(YRES-MENUSIZE)/2,b=1,bq,mx,my;
+	int x0=(XRES-240)/2,y0=YRES/2,b=1,bq,mx,my,textheight;
 	int ret = 0;
+
+	textheight = textwrapheight(msg, 240);
+	y0 -= (52+textheight)/2;
+	if (y0<2)
+		y0 = 2;
+	if (y0+50+textheight>YRES)
+		textheight = YRES-50-y0;
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1065,26 +1620,29 @@ int confirm_ui(pixel *vid_buf, char *top, char *msg, char *btn)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
-		clearrect(vid_buf, x0-2, y0-2, 244, 64);
-		drawrect(vid_buf, x0, y0, 240, 60, 192, 192, 192, 255);
+		clearrect(vid_buf, x0-2, y0-2, 244, 52+textheight);
+		drawrect(vid_buf, x0, y0, 240, 48+textheight, 192, 192, 192, 255);
 		drawtext(vid_buf, x0+8, y0+8, top, 255, 216, 32, 255);
-		drawtext(vid_buf, x0+8, y0+26, msg, 255, 255, 255, 255);
-		drawtext(vid_buf, x0+5, y0+49, "Cancel", 255, 255, 255, 255);
-		drawtext(vid_buf, x0+165, y0+49, btn, 255, 216, 32, 255);
-		drawrect(vid_buf, x0, y0+44, 160, 16, 192, 192, 192, 255);
-		drawrect(vid_buf, x0+160, y0+44, 80, 16, 192, 192, 192, 255);
+		drawtextwrap(vid_buf, x0+8, y0+26, 224, msg, 255, 255, 255, 255);
+		drawtext(vid_buf, x0+5, y0+textheight+37, "Cancel", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+165, y0+textheight+37, btn, 255, 216, 32, 255);
+		drawrect(vid_buf, x0, y0+textheight+32, 160, 16, 192, 192, 192, 255);
+		drawrect(vid_buf, x0+160, y0+textheight+32, 80, 16, 192, 192, 192, 255);
+		
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
-		if (b && !bq && mx>=x0+160 && mx<x0+240 && my>=y0+44 && my<=y0+60)
+		if (b && !bq && mx>=x0+160 && mx<x0+240 && my>=y0+textheight+32 && my<=y0+textheight+48)
 		{
 			ret = 1;
 			break;
 		}
-		if (b && !bq && mx>=x0 && mx<x0+160 && my>=y0+44 && my<=y0+60)
+		
+		if (b && !bq && mx>=x0 && mx<x0+160 && my>=y0+textheight+32 && my<=y0+textheight+48)
 			break;
 
 		if (sdl_key==SDLK_RETURN)
@@ -1098,11 +1656,11 @@ int confirm_ui(pixel *vid_buf, char *top, char *msg, char *btn)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
-
+	
 	return ret;
 }
 
@@ -1114,7 +1672,7 @@ void login_ui(pixel *vid_buf)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1144,9 +1702,7 @@ void login_ui(pixel *vid_buf)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		drawrect(vid_buf, x0, y0, 192, 80, 192, 192, 192, 255);
 		clearrect(vid_buf, x0, y0, 192, 80);
@@ -1159,8 +1715,14 @@ void login_ui(pixel *vid_buf)
 		drawrect(vid_buf, x0+8, y0+40, 176, 16, 192, 192, 192, 255);
 		ui_edit_draw(vid_buf, &ed1);
 		ui_edit_draw(vid_buf, &ed2);
-		drawtext(vid_buf, x0+5, y0+69, "Sign in", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+5, y0+69, "Sign out", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+187-textwidth("Sign in"), y0+69, "Sign in", 255, 255, 55, 255);
 		drawrect(vid_buf, x0, y0+64, 192, 16, 192, 192, 192, 255);
+		drawrect(vid_buf, x0, y0+64, 96, 16, 192, 192, 192, 255);
+		
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		ui_edit_process(mx, my, b, &ed1);
@@ -1170,7 +1732,9 @@ void login_ui(pixel *vid_buf)
 			break;
 		if (b && !bq && mx>=x0+9 && mx<x0+23 && my>=y0+42 && my<y0+46)
 			break;
-		if (b && !bq && mx>=x0 && mx<x0+192 && my>=y0+64 && my<=y0+80)
+		if (b && !bq && mx>=x0 && mx<x0+96 && my>=y0+64 && my<=y0+80)
+			goto fail;
+		if (b && !bq && mx>=x0+97 && mx<x0+192 && my>=y0+64 && my<=y0+80)
 			break;
 
 		if (sdl_key==SDLK_RETURN || sdl_key==SDLK_TAB)
@@ -1191,7 +1755,6 @@ void login_ui(pixel *vid_buf)
 
 	strcpy(svf_user, ed1.str);
 	md5_ascii(svf_pass, (unsigned char *)ed2.str, 0);
-
 	res = http_multipart_post(
 	          "http://" SERVER "/Login.api",
 	          NULL, NULL, NULL,
@@ -1269,17 +1832,19 @@ fail:
 	svf_admin = 0;
 	svf_mod = 0;
 	svf_messages = 0;
+	save_presets(0);
 }
 
 int stamp_ui(pixel *vid_buf)
 {
-	int b=1,bq,mx,my,d=-1,i,j,k,x,gx,gy,y,w,h,r=-1,stamp_page=0,per_page=STAMP_X*STAMP_Y,page_count;
+	int b=1,bq,mx,my,d=-1,i,j,k,x,gx,gy,y,w,h,r=-1,stamp_page=0,per_page=GRID_X*GRID_Y,page_count;
 	char page_info[64];
-	page_count = ceil((float)stamp_count/(float)per_page);
+	// stamp_count-1 to avoid an extra page when there are per_page stamps on each page
+	page_count = (stamp_count-1)/per_page+1;
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1287,18 +1852,16 @@ int stamp_ui(pixel *vid_buf)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
-		clearrect(vid_buf, -1, -1, XRES+1, YRES+MENUSIZE+1);
+		clearrect(vid_buf, -1, -1, XRES+BARSIZE+1, YRES+MENUSIZE+1);
 		k = stamp_page*per_page;//0;
 		r = -1;
 		d = -1;
 		for (j=0; j<GRID_Y; j++)
 			for (i=0; i<GRID_X; i++)
 			{
-				if (stamps[k].name[0] && stamps[k].thumb)
+				if (stamps[k].name[0])
 				{
 					gx = ((XRES/GRID_X)*i) + (XRES/GRID_X-XRES/GRID_S)/2;
 					gy = ((((YRES-MENUSIZE+20)+15)/GRID_Y)*j) + ((YRES-MENUSIZE+20)/GRID_Y-(YRES-MENUSIZE+20)/GRID_S+10)/2 + 18;
@@ -1309,8 +1872,15 @@ int stamp_ui(pixel *vid_buf)
 					h = stamps[k].thumb_h;
 					x -= w/2;
 					y -= h/2;
-					draw_image(vid_buf, stamps[k].thumb, gx+(((XRES/GRID_S)/2)-(w/2)), gy+(((YRES/GRID_S)/2)-(h/2)), w, h, 255);
-					xor_rect(vid_buf, gx+(((XRES/GRID_S)/2)-(w/2)), gy+(((YRES/GRID_S)/2)-(h/2)), w, h);
+					if (stamps[k].thumb)
+					{
+						draw_image(vid_buf, stamps[k].thumb, gx+(((XRES/GRID_S)/2)-(w/2)), gy+(((YRES/GRID_S)/2)-(h/2)), w, h, 255);
+						xor_rect(vid_buf, gx+(((XRES/GRID_S)/2)-(w/2)), gy+(((YRES/GRID_S)/2)-(h/2)), w, h);
+					}
+					else
+					{
+						drawtext(vid_buf, gx+8, gy+((YRES/GRID_S)/2)-4, "Error loading stamp", 255, 255, 255, 255);
+					}
 					if (mx>=gx+XRES/GRID_S-4 && mx<(gx+XRES/GRID_S)+6 && my>=gy-6 && my<gy+4)
 					{
 						d = k;
@@ -1319,7 +1889,7 @@ int stamp_ui(pixel *vid_buf)
 					}
 					else
 					{
-						if (mx>=gx && mx<gx+(XRES/GRID_S) && my>=gy && my<gy+(YRES/GRID_S))
+						if (mx>=gx && mx<gx+(XRES/GRID_S) && my>=gy && my<gy+(YRES/GRID_S) && stamps[k].thumb)
 						{
 							r = k;
 							drawrect(vid_buf, gx-2, gy-2, XRES/GRID_S+3, YRES/GRID_S+3, 128, 128, 210, 255);
@@ -1359,6 +1929,9 @@ int stamp_ui(pixel *vid_buf)
 			}
 		}
 
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		if (b==1&&r!=-1)
@@ -1397,7 +1970,7 @@ int stamp_ui(pixel *vid_buf)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1428,9 +2001,7 @@ void tag_list_ui(pixel *vid_buf)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		op = tag = NULL;
 
@@ -1496,6 +2067,9 @@ void tag_list_ui(pixel *vid_buf)
 		ui_edit_draw(vid_buf, &ed);
 		drawtext(vid_buf, x0+5, y0+245, "Close", 255, 255, 255, 255);
 		drawrect(vid_buf, x0, y0+240, 192, 16, 192, 192, 192, 255);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		ui_edit_process(mx, my, b, &ed);
@@ -1542,7 +2116,7 @@ void tag_list_ui(pixel *vid_buf)
 	}
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1566,7 +2140,7 @@ int save_name_ui(pixel *vid_buf)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1616,9 +2190,7 @@ int save_name_ui(pixel *vid_buf)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		drawrect(vid_buf, x0, y0, 420, 90+YRES/4, 192, 192, 192, 255);
 		clearrect(vid_buf, x0, y0, 420, 90+YRES/4);
@@ -1653,6 +2225,9 @@ int save_name_ui(pixel *vid_buf)
 			ui_copytext_draw(vid_buf, &ctb);
 			ui_copytext_process(mx, my, b, bq, &ctb);
 		}
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		memcpy(vid_buf, old_vid, ((XRES+BARSIZE)*(YRES+MENUSIZE))*PIXELSIZE);
@@ -1704,21 +2279,21 @@ void menu_ui(pixel *vid_buf, int i, int *sl, int *sr)
 {
 	int b=1,bq,mx,my,h,x,y,n=0,height,width,sy,rows=0;
 	pixel *old_vid=(pixel *)calloc((XRES+BARSIZE)*(YRES+MENUSIZE), PIXELSIZE);
+	if (!old_vid)
+		return;
 	fillrect(vid_buf, -1, -1, XRES+1, YRES+MENUSIZE, 0, 0, 0, 192);
 	memcpy(old_vid, vid_buf, ((XRES+BARSIZE)*(YRES+MENUSIZE))*PIXELSIZE);
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 		rows = ceil((float)msections[i].itemcount/16.0f);
 		height = (ceil((float)msections[i].itemcount/16.0f)*18);
 		width = restrict_flt(msections[i].itemcount*31, 0, 16*31);
@@ -1887,7 +2462,7 @@ void menu_ui(pixel *vid_buf, int i, int *sl, int *sr)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -1895,12 +2470,10 @@ void menu_ui(pixel *vid_buf, int i, int *sl, int *sr)
 }
 */
 //current menu function
-void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq, int mx, int my)
+void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *su, int *dae, int b, int bq, int mx, int my)
 {
 	int h,x,y,n=0,height,width,sy,rows=0,xoff=0,fwidth;
 	SEC = SEC2;
-	mx /= sdl_scale;
-	my /= sdl_scale;
 	rows = ceil((float)msections[i].itemcount/16.0f);
 	height = (ceil((float)msections[i].itemcount/16.0f)*18);
 	width = restrict_flt(msections[i].itemcount*31, 0, 16*31);
@@ -1913,7 +2486,7 @@ void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq
 	{
 		for (n = UI_WALLSTART; n<UI_WALLSTART+UI_WALLCOUNT; n++)
 		{
-			if (n!=SPC_AIR&&n!=SPC_HEAT&&n!=SPC_COOL&&n!=SPC_VACUUM&&n!=SPC_WIND&&n!=SPC_PGRV&&n!=SPC_NGRV)
+			if (n!=SPC_AIR&&n!=SPC_HEAT&&n!=SPC_COOL&&n!=SPC_VACUUM&&n!=SPC_WIND&&n!=SPC_PGRV&&n!=SPC_NGRV&&n!=SPC_PROP)
 			{
 				/*if (x-18<=2)
 				{
@@ -1946,15 +2519,11 @@ void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq
 			}
 		}
 	}
-	else if (i==SC_SPECIAL)//special menu
+	else if (i==SC_TOOL)//tools menu
 	{
-		if (fwidth > XRES-BARSIZE) { //fancy scrolling
-			float overflow = fwidth-(XRES-BARSIZE), location = ((float)XRES-BARSIZE)/((float)(mx-(XRES-BARSIZE)));
-			xoff = (int)(overflow / location);
-		}
 		for (n = UI_WALLSTART; n<UI_WALLSTART+UI_WALLCOUNT; n++)
 		{
-			if (n==SPC_AIR||n==SPC_HEAT||n==SPC_COOL||n==SPC_VACUUM||n==SPC_WIND||n==SPC_PGRV||n==SPC_NGRV)
+			if (n==SPC_AIR||n==SPC_HEAT||n==SPC_COOL||n==SPC_VACUUM||n==SPC_WIND||n==SPC_PGRV||n==SPC_NGRV||n==SPC_PROP)
 			{
 				/*if (x-18<=0)
 				{
@@ -1985,6 +2554,13 @@ void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq
 					drawrect(vid_buf, x+30-xoff, y-1, 29, 17, 55, 55, 255, 255);
 				}
 			}
+		}
+	}
+	else if (i==SC_SPECIAL)//special menu
+	{
+		if (fwidth > XRES-BARSIZE) { //fancy scrolling
+			float overflow = fwidth-(XRES-BARSIZE), location = ((float)XRES-BARSIZE)/((float)(mx-(XRES-BARSIZE)));
+			xoff = (int)(overflow / location);
 		}
 		for (n = 0; n<PT_NUM; n++)
 		{
@@ -2101,7 +2677,7 @@ void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq
 	{
 		drawtext(vid_buf, XRES-textwidth((char *)msections[i].name)-BARSIZE, sy-10, (char *)msections[i].name, 255, 255, 255, 255);
 	}
-	else if (i==SC_WALL||(i==SC_SPECIAL&&h>=UI_WALLSTART))
+	else if (i==SC_WALL||i==SC_TOOL)
 	{
 		drawtext(vid_buf, XRES-textwidth((char *)wtypes[h-UI_WALLSTART].descs)-BARSIZE, sy-10, (char *)wtypes[h-UI_WALLSTART].descs, 255, 255, 255, 255);
 	}
@@ -2131,7 +2707,7 @@ void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq
 			SEC2 = -1;
 		}
 		else {
-			*sl = h;
+			*sl = *su = h;
 			*dae = 51;
 		}
 	}
@@ -2151,12 +2727,12 @@ void menu_ui_v3(pixel *vid_buf, int i, int *sl, int *sr, int *dae, int b, int bq
 			SEC2 = -1;
 		}
 		else {
-			*sr = h;
+			*sr = *su = h;
 			*dae = 51;
 		}
 	}
 }
-int color_menu_ui(pixel *vid_buf, int i, int *cr, int *cg, int *cb, int b, int bq, int mx, int my)
+int color_menu_ui(pixel *vid_buf, int i, int *cr, int *cg, int *cb, int b, int bq, int mx, int my, int *tool)
 {
 	int h,x,y,n=0,height,width,sy,rows=0,xoff=0,fwidth,a,c;
 	fwidth = colorsections[i].itemcount*31;
@@ -2164,7 +2740,7 @@ int color_menu_ui(pixel *vid_buf, int i, int *cr, int *cg, int *cb, int b, int b
 	x = XRES-BARSIZE-18;
 	y = YRES+5;
 	sy = y;
-	if(i==1) //color menu
+	if(i==0) //color menu
 	{
 		if (fwidth > XRES-BARSIZE) { //fancy scrolling
 			float overflow = fwidth-(XRES-BARSIZE), location = ((float)XRES-BARSIZE)/((float)(mx-(XRES-BARSIZE)));
@@ -2186,27 +2762,137 @@ int color_menu_ui(pixel *vid_buf, int i, int *cr, int *cg, int *cb, int b, int b
 					h = n;
 				}
 		}
+		if(h!=-1)
+		{
+			drawtext(vid_buf, XRES-textwidth((char *)colorlist[h].descs)-BARSIZE, sy+20, (char *)colorlist[h].descs, 255, 255, 255, 255);
+		}
+		else
+		{
+			drawtext(vid_buf, XRES-textwidth((char *)colorsections[i].name)-BARSIZE, sy+20, (char *)colorsections[i].name, 255, 255, 255, 255);
+		}
+		//these are click events, b=1 is left click, b=4 is right
+		//h has the value of the element it is over, and -1 if not over an element
+		if (b==1 && h!=-1)
+		{
+			*cr = PIXR(colorlist[h].colour);
+			*cg = PIXG(colorlist[h].colour);
+			*cb = PIXB(colorlist[h].colour);
+			return 1;
+		}
 	}
-	if(h!=-1)
+	if(i==1) //deco tool menu
 	{
-		drawtext(vid_buf, XRES-textwidth((char *)colorlist[h].descs)-BARSIZE, sy-14, (char *)colorlist[h].descs, 255, 255, 255, 255);
+		if (fwidth > XRES-BARSIZE) { //fancy scrolling
+			float overflow = fwidth-(XRES-BARSIZE), location = ((float)XRES-BARSIZE)/((float)(mx-(XRES-BARSIZE)));
+			xoff = (int)(overflow / location);
+		}
+		for (n = 0; n<4; n++)
+		{
+				for (a=1; a<15; a++)
+				{
+					for (c=1; c<27; c++)
+					{
+						if (n == DECO_LIGHTEN)
+							vid_buf[(XRES+BARSIZE)*(y+a)+((x-xoff)+c)] = PIXRGB(PIXR(toollist[n].colour)-10*a, PIXG(toollist[n].colour)-10*a, PIXB(toollist[n].colour)-10*a);
+						else if (n == DECO_DARKEN)
+							vid_buf[(XRES+BARSIZE)*(y+a)+((x-xoff)+c)] = PIXRGB(PIXR(toollist[n].colour)+10*a, PIXG(toollist[n].colour)+10*a, PIXB(toollist[n].colour)+10*a);
+						else if (n == DECO_SMUDGE)
+							vid_buf[(XRES+BARSIZE)*(y+a)+((x-xoff)+c)] = PIXRGB(PIXR(toollist[n].colour), PIXG(toollist[n].colour)-5*c, PIXB(toollist[n].colour)+5*c);
+						else if (n == DECO_DRAW)
+							vid_buf[(XRES+BARSIZE)*(y+a)+((x-xoff)+c)] = PIXRGB(*cr,*cg,*cb);
+						else
+							vid_buf[(XRES+BARSIZE)*(y+a)+((x-xoff)+c)] = toollist[n].colour;
+					}
+				}
+				x -= 26+5;
+				if (!bq && mx>=x+32-xoff && mx<x+58-xoff && my>=y && my< y+15)
+				{
+					drawrect(vid_buf, x+30-xoff, y-1, 29, 17, 255, 55, 55, 255);
+					h = n;
+				}
+				else if (n==*tool)
+				{
+					drawrect(vid_buf, x+30-xoff, y-1, 29, 17, 255, 55, 55, 255);
+				}
+		}
+		if(h!=-1)
+		{
+			drawtext(vid_buf, XRES-textwidth((char *)toollist[h].descs)-BARSIZE, sy+20, (char *)toollist[h].descs, 255, 255, 255, 255);
+		}
+		else
+		{
+			drawtext(vid_buf, XRES-textwidth((char *)colorsections[i].name)-BARSIZE, sy+20, (char *)colorsections[i].name, 255, 255, 255, 255);
+		}
+		//these are click events, b=1 is left click, b=4 is right
+		//h has the value of the element it is over, and -1 if not over an element
+		if (b==1 && h!=-1)
+		{
+			*tool = h;
+			return 0;
+		}
 	}
-	//these are click events, b=1 is left click, b=4 is right
-	//h has the value of the element it is over, and -1 if not over an element
-	if (b==1 && h!=-1)
-	{
-		*cr = PIXR(colorlist[h].colour);
-		*cg = PIXG(colorlist[h].colour);
-		*cb = PIXB(colorlist[h].colour);
-		return 1;
-	}
+	
 	return 0;
+}
+
+int quickoptions_tooltip_fade = 0;
+char * quickoptions_tooltip;
+int quickoptions_tooltip_y = 0;
+void quickoptions_menu(pixel *vid_buf, int b, int bq, int x, int y)
+{
+	int i = 0;
+	if(quickoptions_tooltip_fade && quickoptions_tooltip)
+	{
+		drawtext_outline(vid_buf, (XRES - 5) - textwidth(quickoptions_tooltip), quickoptions_tooltip_y, quickoptions_tooltip, 255, 255, 255, quickoptions_tooltip_fade*20, 0, 0, 0, quickoptions_tooltip_fade*15);
+		quickoptions_tooltip_fade--;
+	}
+	while(quickmenu[i].icon!=NULL)
+	{
+		if(quickmenu[i].type == QM_TOGGLE)
+		{
+			drawrect(vid_buf, (XRES+BARSIZE)-16, (i*16)+1, 14, 14, 255, 255, 255, 255);
+			if(*(quickmenu[i].variable))
+			{
+				fillrect(vid_buf, (XRES+BARSIZE)-16, (i*16)+1, 14, 14, 255, 255, 255, 255);
+				drawtext(vid_buf, (XRES+BARSIZE)-11, (i*16)+5, quickmenu[i].icon, 0, 0, 0, 255);
+			}
+			else
+			{
+				fillrect(vid_buf, (XRES+BARSIZE)-16, (i*16)+1, 14, 14, 0, 0, 0, 255);
+				drawtext(vid_buf, (XRES+BARSIZE)-11, (i*16)+5, quickmenu[i].icon, 255, 255, 255, 255);
+			}
+			if(x >= (XRES+BARSIZE)-16 && x <= (XRES+BARSIZE)-2 && y >= (i*16)+1 && y <= (i*16)+15)
+			{
+				quickoptions_tooltip_fade+=2;
+				quickoptions_tooltip = quickmenu[i].name;
+				quickoptions_tooltip_y = (i*16)+5;
+				if(b && !bq)
+				{
+					if (!strcmp(quickmenu[i].name,"Newtonian gravity"))
+					{
+						if(!ngrav_enable)
+							start_grav_async();
+						else
+							stop_grav_async();
+					}
+					else
+						*(quickmenu[i].variable) = !(*(quickmenu[i].variable));
+				}
+			}
+		}
+		i++;
+	}
+	if(quickoptions_tooltip_fade > 12)
+		quickoptions_tooltip_fade = 12;
+	if(quickoptions_tooltip_fade < 0)
+		quickoptions_tooltip_fade = 0;
 }
 
 int sdl_poll(void)
 {
 	SDL_Event event;
 	sdl_key=sdl_rkey=sdl_wheel=sdl_ascii=0;
+	loop_time = SDL_GetTicks();
 	while (SDL_PollEvent(&event))
 	{
 		switch (event.type)
@@ -2214,90 +2900,18 @@ int sdl_poll(void)
 		case SDL_KEYDOWN:
 			sdl_key=event.key.keysym.sym;
 			sdl_ascii=event.key.keysym.unicode;
-			if (event.key.keysym.sym == SDLK_CAPSLOCK)
-				sdl_caps = 1;
-			if (event.key.keysym.sym=='z')
-			{
-				sdl_zoom_trig = 1;
-			}
-			if ( event.key.keysym.sym == SDLK_PLUS)
+			if (event.key.keysym.sym == SDLK_PLUS)
 			{
 				sdl_wheel++;
 			}
-			if ( event.key.keysym.sym == SDLK_MINUS)
+			if (event.key.keysym.sym == SDLK_MINUS)
 			{
 				sdl_wheel--;
-			}
-			//  4
-			//1 8 2
-			if (event.key.keysym.sym == SDLK_RIGHT)
-			{
-				player[0] = (int)(player[0])|0x02;  //Go right command
-			}
-			if (event.key.keysym.sym == SDLK_LEFT)
-			{
-				player[0] = (int)(player[0])|0x01;  //Go left command
-			}
-			if (event.key.keysym.sym == SDLK_DOWN && ((int)(player[0])&0x08)!=0x08)
-			{
-				player[0] = (int)(player[0])|0x08;  //Go left command
-			}
-			if (event.key.keysym.sym == SDLK_UP && ((int)(player[0])&0x04)!=0x04)
-			{
-				player[0] = (int)(player[0])|0x04;  //Jump command
-			}
-
-			if (event.key.keysym.sym == SDLK_d)
-			{
-				player2[0] = (int)(player2[0])|0x02;  //Go right command
-			}
-			if (event.key.keysym.sym == SDLK_a)
-			{
-				player2[0] = (int)(player2[0])|0x01;  //Go left command
-			}
-			if (event.key.keysym.sym == SDLK_s && ((int)(player2[0])&0x08)!=0x08)
-			{
-				player2[0] = (int)(player2[0])|0x08;  //Go left command
-			}
-			if (event.key.keysym.sym == SDLK_w && ((int)(player2[0])&0x04)!=0x04)
-			{
-				player2[0] = (int)(player2[0])|0x04;  //Jump command
 			}
 			break;
 
 		case SDL_KEYUP:
 			sdl_rkey=event.key.keysym.sym;
-			if (event.key.keysym.sym == SDLK_CAPSLOCK)
-				sdl_caps = 0;
-			if (event.key.keysym.sym == 'z')
-				sdl_zoom_trig = 0;
-			if (event.key.keysym.sym == SDLK_RIGHT || event.key.keysym.sym == SDLK_LEFT)
-			{
-				player[1] = player[0];  //Saving last movement
-				player[0] = (int)(player[0])&12;  //Stop command
-			}
-			if (event.key.keysym.sym == SDLK_UP)
-			{
-				player[0] = (int)(player[0])&11;
-			}
-			if (event.key.keysym.sym == SDLK_DOWN)
-			{
-				player[0] = (int)(player[0])&7;
-			}
-
-			if (event.key.keysym.sym == SDLK_d || event.key.keysym.sym == SDLK_a)
-			{
-				player2[1] = player2[0];  //Saving last movement
-				player2[0] = (int)(player2[0])&12;  //Stop command
-			}
-			if (event.key.keysym.sym == SDLK_w)
-			{
-				player2[0] = (int)(player2[0])&11;
-			}
-			if (event.key.keysym.sym == SDLK_s)
-			{
-				player2[0] = (int)(player2[0])&7;
-			}
 			break;
 		case SDL_MOUSEBUTTONDOWN:
 			if (event.button.button == SDL_BUTTON_WHEELUP)
@@ -2357,12 +2971,148 @@ int sdl_poll(void)
 	return 0;
 }
 
+void stickmen_keys()
+{
+	//  4
+	//1 8 2
+	if (sdl_key == SDLK_RIGHT)
+	{
+		player.comm = (int)(player.comm)|0x02;  //Go right command
+	}
+	if (sdl_key == SDLK_LEFT)
+	{
+		player.comm = (int)(player.comm)|0x01;  //Go left command
+	}
+	if (sdl_key == SDLK_DOWN && ((int)(player.comm)&0x08)!=0x08)
+	{
+		player.comm = (int)(player.comm)|0x08;  //Use element command
+	}
+	if (sdl_key == SDLK_UP && ((int)(player.comm)&0x04)!=0x04)
+	{
+		player.comm = (int)(player.comm)|0x04;  //Jump command
+	}
+
+	if (sdl_key == SDLK_d)
+	{
+		player2.comm = (int)(player2.comm)|0x02;  //Go right command
+	}
+	if (sdl_key == SDLK_a)
+	{
+		player2.comm = (int)(player2.comm)|0x01;  //Go left command
+	}
+	if (sdl_key == SDLK_s && ((int)(player2.comm)&0x08)!=0x08)
+	{
+		player2.comm = (int)(player2.comm)|0x08;  //Use element command
+	}
+	if (sdl_key == SDLK_w && ((int)(player2.comm)&0x04)!=0x04)
+	{
+		player2.comm = (int)(player2.comm)|0x04;  //Jump command
+	}
+
+	if (sdl_rkey == SDLK_RIGHT || sdl_rkey == SDLK_LEFT)
+	{
+		player.pcomm = player.comm;  //Saving last movement
+		player.comm = (int)(player.comm)&12;  //Stop command
+	}
+	if (sdl_rkey == SDLK_UP)
+	{
+		player.comm = (int)(player.comm)&11;
+	}
+	if (sdl_rkey == SDLK_DOWN)
+	{
+		player.comm = (int)(player.comm)&7;
+	}
+
+	if (sdl_rkey == SDLK_d || sdl_rkey == SDLK_a)
+	{
+		player2.pcomm = player2.comm;  //Saving last movement
+		player2.comm = (int)(player2.comm)&12;  //Stop command
+	}
+	if (sdl_rkey == SDLK_w)
+	{
+		player2.comm = (int)(player2.comm)&11;
+	}
+	if (sdl_rkey == SDLK_s)
+	{
+		player2.comm = (int)(player2.comm)&7;
+	}
+}
+
 void set_cmode(int cm) // sets to given view mode
 {
-	cmode = cm;
+	int cmode = cm;
+	colour_mode = COLOUR_DEFAULT;
+	
+	free(render_modes);
+	render_modes = calloc(2, sizeof(unsigned int));
+	render_modes[0] = RENDER_BASC;
+	render_modes[1] = 0;
+	
+	free(display_modes);
+	display_modes = calloc(1, sizeof(unsigned int));
+	display_modes[0] = 0;
+	
 	itc = 51;
-	if (cmode==CM_BLOB)
+	if (cmode==CM_VEL)
 	{
+		free(render_modes);
+		render_modes = calloc(3, sizeof(unsigned int));
+		render_modes[0] = RENDER_EFFE;
+		render_modes[1] = RENDER_BASC;
+		render_modes[2] = 0;
+		free(display_modes);
+		display_modes = calloc(2, sizeof(unsigned int));
+		display_modes[0] = DISPLAY_AIRV;
+		display_modes[1] = 0;
+		strcpy(itc_msg, "Velocity Display");
+	}
+	else if (cmode==CM_PRESS)
+	{
+		free(render_modes);
+		render_modes = calloc(3, sizeof(unsigned int));
+		render_modes[0] = RENDER_EFFE;
+		render_modes[1] = RENDER_BASC;
+		render_modes[2] = 0;
+		free(display_modes);
+		display_modes = calloc(2, sizeof(unsigned int));
+		display_modes[0] = DISPLAY_AIRP;
+		display_modes[1] = 0;
+		strcpy(itc_msg, "Pressure Display");
+	}
+	else if (cmode==CM_PERS)
+	{
+		free(render_modes);
+		render_modes = calloc(3, sizeof(unsigned int));
+		render_modes[0] = RENDER_EFFE;
+		render_modes[1] = RENDER_BASC;
+		render_modes[2] = 0;
+		free(display_modes);
+		display_modes = calloc(2, sizeof(unsigned int));
+		display_modes[0] = DISPLAY_PERS;
+		display_modes[1] = 0;
+		memset(pers_bg, 0, (XRES+BARSIZE)*YRES*PIXELSIZE);
+		strcpy(itc_msg, "Persistent Display");
+	}
+	else if (cmode==CM_FIRE)
+	{
+		free(render_modes);
+		render_modes = calloc(3, sizeof(unsigned int));
+		render_modes[0] = RENDER_FIRE;
+		render_modes[1] = RENDER_EFFE;
+		render_modes[2] = 0;
+		memset(fire_r, 0, sizeof(fire_r));
+		memset(fire_g, 0, sizeof(fire_g));
+		memset(fire_b, 0, sizeof(fire_b));
+		strcpy(itc_msg, "Fire Display");
+	}
+	else if (cmode==CM_BLOB)
+	{
+		free(render_modes);
+		render_modes = calloc(4, sizeof(unsigned int));
+		render_modes[0] = RENDER_FIRE;
+		render_modes[1] = RENDER_BLOB;
+		render_modes[2] = RENDER_EFFE;
+		render_modes[3] = 0;
 		memset(fire_r, 0, sizeof(fire_r));
 		memset(fire_g, 0, sizeof(fire_g));
 		memset(fire_b, 0, sizeof(fire_b));
@@ -2370,59 +3120,64 @@ void set_cmode(int cm) // sets to given view mode
 	}
 	else if (cmode==CM_HEAT)
 	{
+		colour_mode = COLOUR_HEAT;
 		strcpy(itc_msg, "Heat Display");
+		free(display_modes);
+		display_modes = calloc(2, sizeof(unsigned int));
+		display_modes[0] = DISPLAY_AIRH;
+		display_modes[1] = 0;
 	}
 	else if (cmode==CM_FANCY)
 	{
+		free(render_modes);
+		render_modes = calloc(5, sizeof(unsigned int));
+		render_modes[0] = RENDER_FIRE;
+		render_modes[1] = RENDER_GLOW;
+		render_modes[2] = RENDER_BLUR;
+		render_modes[3] = RENDER_EFFE;
+		render_modes[4] = 0;
+		free(display_modes);
+		display_modes = calloc(2, sizeof(unsigned int));
+		display_modes[0] = DISPLAY_WARP;
+		display_modes[1] = 0;
 		memset(fire_r, 0, sizeof(fire_r));
 		memset(fire_g, 0, sizeof(fire_g));
 		memset(fire_b, 0, sizeof(fire_b));
 		strcpy(itc_msg, "Fancy Display");
 	}
-	else if (cmode==CM_FIRE)
-	{
-		memset(fire_r, 0, sizeof(fire_r));
-		memset(fire_g, 0, sizeof(fire_g));
-		memset(fire_b, 0, sizeof(fire_b));
-		strcpy(itc_msg, "Fire Display");
-	}
-	else if (cmode==CM_PERS)
-	{
-		memset(fire_bg, 0, XRES*YRES*PIXELSIZE);
-		memset(pers_bg, 0, (XRES+BARSIZE)*YRES*PIXELSIZE);
-		strcpy(itc_msg, "Persistent Display");
-	}
-	else if (cmode==CM_PRESS)
-	{
-		strcpy(itc_msg, "Pressure Display");
-	}
 	else if (cmode==CM_NOTHING)
 	{
 		strcpy(itc_msg, "Nothing Display");
 	}
-	else if (cmode==CM_CRACK)
-	{
-		strcpy(itc_msg, "Alternate Velocity Display");
-	}
 	else if (cmode==CM_GRAD)
 	{
+		colour_mode = COLOUR_GRAD;
 		strcpy(itc_msg, "Heat Gradient Display");
 	}
 	else if (cmode==CM_LIFE)
 	{
-		if (DEBUG_MODE) //can only get to Life view in debug mode
-		{
-			strcpy(itc_msg, "Life Display");
-		}
-		else
-		{
-			set_cmode(CM_CRACK);
-		}
+		colour_mode = COLOUR_LIFE;
+		strcpy(itc_msg, "Life Gradient Display");
+	}
+	else if (cmode==CM_CRACK)
+	{
+		free(render_modes);
+		render_modes = calloc(3, sizeof(unsigned int));
+		render_modes[0] = RENDER_EFFE;
+		render_modes[1] = RENDER_BASC;
+		render_modes[2] = 0;
+		free(display_modes);
+		display_modes = calloc(2, sizeof(unsigned int));
+		display_modes[0] = DISPLAY_AIRC;
+		display_modes[1] = 0;
+		strcpy(itc_msg, "Alternate Velocity Display");
 	}
 	else //if no special text given, it will display this.
 	{
-		strcpy(itc_msg, "Velocity Display");
+		strcpy(itc_msg, "Error: Incorrect Display Number");
 	}
+
+	update_display_modes();// Update render_mode and display_mode from the relevant arrays
 	save_presets(0);
 }
 
@@ -2433,6 +3188,10 @@ char *download_ui(pixel *vid_buf, char *uri, int *len)
 	int x0=(XRES-240)/2,y0=(YRES-MENUSIZE)/2;
 	int done, total, i, ret, zlen, ulen;
 	char str[16], *tmp, *res;
+	
+	if (svf_login) {
+		http_auth_headers(http, svf_user_id, NULL, svf_session_id);
+	}
 
 	while (!http_async_req_status(http))
 	{
@@ -2460,6 +3219,9 @@ char *download_ui(pixel *vid_buf, char *uri, int *len)
 			drawtext(vid_buf, x0+120-textwidth("Waiting...")/2, y0+48, "Waiting...", 255, 216, 32, 255);
 
 		drawrect(vid_buf, x0, y0+44, 240, 16, 192, 192, 192, 255);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 	}
 
@@ -2546,6 +3308,8 @@ int search_ui(pixel *vid_buf)
 	void *thumb, *data;
 	int thlen, dlen;
 
+	if (!v_buf)
+		return 0;
 	memset(v_buf, 0, ((YRES+MENUSIZE)*(XRES+BARSIZE))*PIXELSIZE);
 
 	memset(img_http, 0, sizeof(img_http));
@@ -2567,7 +3331,7 @@ int search_ui(pixel *vid_buf)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -2595,9 +3359,7 @@ int search_ui(pixel *vid_buf)
 		bq = b;
 		mxq = mx;
 		myq = my;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		if (mx!=mxq || my!=myq || sdl_wheel || b)
 			mmt = 0;
@@ -2932,7 +3694,9 @@ int search_ui(pixel *vid_buf)
 			drawtext(vid_buf, gx+(w-i)/2, gy+YRES/GRID_Z+4, search_names[mp], 192, 192, 192, 255);
 			drawtext(vid_buf, gx+(w-textwidth(search_owners[mp]))/2, gy+YRES/GRID_Z+16, search_owners[mp], 128, 128, 128, 255);
 		}
-
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		ui_edit_process(mx, my, b, &ed);
@@ -3139,14 +3903,19 @@ int search_ui(pixel *vid_buf)
 				thumb_cache_add(img_id[i], thumb, thlen);
 				for (pos=0; pos<GRID_X*GRID_Y; pos++) {
 					if (search_dates[pos]) {
-						char *id_d_temp = malloc(strlen(search_ids[pos])+strlen(search_dates[pos])+1);
+						char *id_d_temp = malloc(strlen(search_ids[pos])+strlen(search_dates[pos])+2);
+						if (id_d_temp == 0)
+						{
+							break;
+						}
 						strcpy(id_d_temp, search_ids[pos]);
 						strappend(id_d_temp, "_");
 						strappend(id_d_temp, search_dates[pos]);
 						//img_id[i] = mystrdup(id_d_temp);
-						if (id_d_temp && !strcmp(id_d_temp, img_id[i])) {
+						if (!strcmp(id_d_temp, img_id[i]) && !search_thumbs[pos]) {
 							break;
 						}
+						free(id_d_temp);
 					} else {
 						if (search_ids[pos] && !strcmp(search_ids[pos], img_id[i])) {
 							break;
@@ -3168,9 +3937,25 @@ int search_ui(pixel *vid_buf)
 				for (pos=0; pos<GRID_X*GRID_Y; pos++)
 					if (search_ids[pos] && !search_thumbs[pos])
 					{
-						for (gi=0; gi<IMGCONNS; gi++)
-							if (img_id[gi] && !strcmp(search_ids[pos], img_id[gi]))
-								break;
+						if (search_dates[pos])
+						{
+							char *id_d_temp = malloc(strlen(search_ids[pos])+strlen(search_dates[pos])+2);
+							strcpy(id_d_temp, search_ids[pos]);
+							strappend(id_d_temp, "_");
+							strappend(id_d_temp, search_dates[pos]);
+							
+							for (gi=0; gi<IMGCONNS; gi++)
+								if (img_id[gi] && !strcmp(id_d_temp, img_id[gi]))
+									break;
+									
+							free(id_d_temp);
+						}
+						else
+						{
+							for (gi=0; gi<IMGCONNS; gi++)
+								if (img_id[gi] && !strcmp(search_ids[pos], img_id[gi]))
+									break;
+						}
 						if (gi<IMGCONNS)
 							continue;
 						break;
@@ -3178,24 +3963,26 @@ int search_ui(pixel *vid_buf)
 				if (pos<GRID_X*GRID_Y)
 				{
 					if (search_dates[pos]) {
-						char *id_d_temp = malloc(strlen(search_ids[pos])+strlen(search_dates[pos])+1);
-						uri = malloc(strlen(search_ids[pos])*3+strlen(search_dates[pos])*3+strlen(SERVER)+71);
-						strcpy(uri, "http://" SERVER "/Get.api?Op=thumbsmall&ID=");
+						char *id_d_temp = malloc(strlen(search_ids[pos])+strlen(search_dates[pos])+2);
+						uri = malloc(strlen(search_ids[pos])*3+strlen(search_dates[pos])*3+strlen(STATICSERVER)+71);
+						strcpy(uri, "http://" STATICSERVER "/");
 						strcaturl(uri, search_ids[pos]);
-						strappend(uri, "&Date=");
+						strappend(uri, "_");
 						strcaturl(uri, search_dates[pos]);
+						strappend(uri, "_small.pti");
 
 						strcpy(id_d_temp, search_ids[pos]);
 						strappend(id_d_temp, "_");
 						strappend(id_d_temp, search_dates[pos]);
 						img_id[i] = mystrdup(id_d_temp);
+						free(id_d_temp);
 					} else {
 						uri = malloc(strlen(search_ids[pos])*3+strlen(SERVER)+64);
-						strcpy(uri, "http://" SERVER "/Get.api?Op=thumbsmall&ID=");
+						strcpy(uri, "http://" STATICSERVER "/");
 						strcaturl(uri, search_ids[pos]);
+						strappend(uri, "_small.pti");
 						img_id[i] = mystrdup(search_ids[pos]);
 					}
-
 					img_http[i] = http_async_req_start(img_http[i], uri, NULL, 0, 1);
 					free(uri);
 				}
@@ -3252,7 +4039,7 @@ int report_ui(pixel* vid_buf, char *save_id)
 	fillrect(vid_buf, -1, -1, XRES+BARSIZE, YRES+MENUSIZE, 0, 0, 0, 192);
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -3263,9 +4050,7 @@ int report_ui(pixel* vid_buf, char *save_id)
 		drawrect(vid_buf, 205, 155, (XRES+BARSIZE-400)-10, (YRES+MENUSIZE-300)-28, 255, 255, 255, 170);
 
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 
 		drawrect(vid_buf, 200, (YRES+MENUSIZE-150)-18, 50, 18, 255, 255, 255, 255);
@@ -3290,6 +4075,9 @@ int report_ui(pixel* vid_buf, char *save_id)
 				return 0;
 		}
 		ui_edit_draw(vid_buf, &ed);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 		ui_edit_process(mx, my, b, &ed);
 	}
@@ -3306,7 +4094,7 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 	void *data = NULL, *info_data, *thumb_data_full;
 	save_info *info = calloc(sizeof(save_info), 1);
 	void *http = NULL, *http_2 = NULL, *http_3 = NULL;
-	int lasttime = TIMEOUT;
+	int lasttime = TIMEOUT, saveTotal, saveDone, infoTotal, infoDone, downloadDone, downloadTotal;
 	int status, status_2, info_ready = 0, data_ready = 0, thumb_data_ready = 0;
 	time_t http_last_use = HTTP_TIMEOUT,  http_last_use_2 = HTTP_TIMEOUT,  http_last_use_3 = HTTP_TIMEOUT;
 	pixel *save_pic;// = malloc((XRES/2)*(YRES/2));
@@ -3317,9 +4105,11 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 	ui_edit ed;
 	ui_copytext ctb;
 
-	viewcountbuffer[0] = 0;
 	pixel *old_vid=(pixel *)calloc((XRES+BARSIZE)*(YRES+MENUSIZE), PIXELSIZE);
+	if (!old_vid || !info)
+		return 0;
 	fillrect(vid_buf, -1, -1, XRES+BARSIZE, YRES+MENUSIZE, 0, 0, 0, 192);
+	viewcountbuffer[0] = 0;
 
 	fillrect(vid_buf, 50, 50, XRES+BARSIZE-100, YRES+MENUSIZE-100, 0, 0, 0, 255);
 	drawrect(vid_buf, 50, 50, XRES+BARSIZE-100, YRES+MENUSIZE-100, 255, 255, 255, 255);
@@ -3351,13 +4141,27 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
 
 	//Try to load the thumbnail from the cache
-	if(!thumb_cache_find(save_id, &thumb_data, &thumb_data_size)){
+	if(save_date)
+	{
+		char * id_d_temp = malloc(strlen(save_id)+strlen(save_date)+2);
+		strcpy(id_d_temp, save_id);
+		strappend(id_d_temp, "_");
+		strappend(id_d_temp, save_date);
+		
+		status = thumb_cache_find(id_d_temp, &thumb_data, &thumb_data_size);
+		free(id_d_temp);
+	}
+	else
+	{
+		status = thumb_cache_find(save_id, &thumb_data, &thumb_data_size);
+	}
+	if(!status){
 		thumb_data = NULL;	
 	} else {
 		//We found a thumbnail in the cache, we'll draw this one while we wait for the full image to load.
@@ -3374,36 +4178,42 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 	//Begin Async loading of data
 	if (save_date) {
 		// We're loading an historical save
-		uri = malloc(strlen(save_id)*3+strlen(save_date)*3+strlen(SERVER)+71);
-		strcpy(uri, "http://" SERVER "/Get.api?Op=save&ID=");
+		uri = malloc(strlen(save_id)*3+strlen(save_date)*3+strlen(STATICSERVER)+71);
+		strcpy(uri, "http://" STATICSERVER "/");
 		strcaturl(uri, save_id);
-		strappend(uri, "&Date=");
+		strappend(uri, "_");
 		strcaturl(uri, save_date);
+		strappend(uri, ".cps");
 
-		uri_2 = malloc(strlen(save_id)*3+strlen(save_date)*3+strlen(SERVER)+71);
-		strcpy(uri_2, "http://" SERVER "/Info.api?ID=");
+		uri_2 = malloc(strlen(save_id)*3+strlen(save_date)*3+strlen(STATICSERVER)+71);
+		strcpy(uri_2, "http://" STATICSERVER "/");
 		strcaturl(uri_2, save_id);
-		strappend(uri_2, "&Date=");
+		strappend(uri_2, "_");
 		strcaturl(uri_2, save_date);
+		strappend(uri_2, ".info");
 
-		uri_3 = malloc(strlen(save_id)*3+strlen(save_date)*3+strlen(SERVER)+71);
-		strcpy(uri_3, "http://" SERVER "/Get.api?Op=thumblarge&ID=");
+		uri_3 = malloc(strlen(save_id)*3+strlen(save_date)*3+strlen(STATICSERVER)+71);
+		strcpy(uri_3, "http://" STATICSERVER "/");
 		strcaturl(uri_3, save_id);
-		strappend(uri_3, "&Date=");
+		strappend(uri_3, "_");
 		strcaturl(uri_3, save_date);
+		strappend(uri_3, "_large.pti");
 	} else {
 		//We're loading a normal save
-		uri = malloc(strlen(save_id)*3+strlen(SERVER)+64);
-		strcpy(uri, "http://" SERVER "/Get.api?Op=save&ID=");
+		uri = malloc(strlen(save_id)*3+strlen(STATICSERVER)+64);
+		strcpy(uri, "http://" STATICSERVER "/");
 		strcaturl(uri, save_id);
+		strappend(uri, ".cps");
 
-		uri_2 = malloc(strlen(save_id)*3+strlen(SERVER)+64);
-		strcpy(uri_2, "http://" SERVER "/Info.api?ID=");
+		uri_2 = malloc(strlen(save_id)*3+strlen(STATICSERVER)+64);
+		strcpy(uri_2, "http://" STATICSERVER "/");
 		strcaturl(uri_2, save_id);
+		strappend(uri_2, ".info");
 
-		uri_3 = malloc(strlen(save_id)*3+strlen(SERVER)+64);
-		strcpy(uri_3, "http://" SERVER "/Get.api?Op=thumblarge&ID=");
+		uri_3 = malloc(strlen(save_id)*3+strlen(STATICSERVER)+64);
+		strcpy(uri_3, "http://" STATICSERVER "/");
 		strcaturl(uri_3, save_id);
+		strappend(uri_3, "_large.pti");
 	}
 	http = http_async_req_start(http, uri, NULL, 0, 1);
 	http_2 = http_async_req_start(http_2, uri_2, NULL, 0, 1);
@@ -3425,15 +4235,19 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
+		if (active)
+		{
+			http_async_get_length(http, &saveTotal, &saveDone);
+		}
 		if (active && http_async_req_status(http))
 		{
 			int imgh, imgw, nimgh, nimgw;
 			http_last_use = time(NULL);
 			data = http_async_req_stop(http, &status, &data_size);
+			saveDone = data_size;
+			saveTotal = data_size;
 			if (status == 200)
 			{
 				pixel *full_save;
@@ -3455,10 +4269,15 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 			free(http);
 			http = NULL;
 		}
+		if (active_2)
+		{
+			http_async_get_length(http_2, &infoTotal, &infoDone);
+		}
 		if (active_2 && http_async_req_status(http_2))
 		{
 			http_last_use_2 = time(NULL);
-			info_data = http_async_req_stop(http_2, &status_2, NULL);
+			info_data = http_async_req_stop(http_2, &status_2, &infoTotal);
+			infoDone = infoTotal;
 			if (status_2 == 200 || !info_data)
 			{
 				info_ready = info_parse(info_data, info);
@@ -3590,6 +4409,19 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 			drawrect(vid_buf, XRES+BARSIZE-100, YRES+MENUSIZE-68, 50, 18, 255, 255, 255, 255);
 			drawtext(vid_buf, XRES+BARSIZE-90, YRES+MENUSIZE-63, "Submit", 255, 255, 255, 255);
 		}
+		
+		//Download completion
+		downloadTotal = saveTotal+infoTotal;
+		downloadDone = saveDone+infoDone;
+		if(downloadTotal>downloadDone)
+		{
+			clearrect(vid_buf, 51, (YRES/2)+37, (XRES)/2, 14);
+			fillrect(vid_buf, 51, (YRES/2)+38, (((float)XRES-2)/2.0f)*((float)downloadDone/(float)downloadTotal), 12, 255, 200, 0, 255);
+			if(((float)downloadDone/(float)downloadTotal)>0.5f)
+				drawtext(vid_buf, 51+(((XRES/2)-textwidth("Downloading"))/2), (YRES/2)+40, "Downloading", 0, 0, 0, 255);
+			else
+				drawtext(vid_buf, 51+(((XRES/2)-textwidth("Downloading"))/2), (YRES/2)+40, "Downloading", 255, 255, 255, 255);
+		}
 
 		//Save ID text and copybox
 		cix = textwidth("Save ID: ");
@@ -3618,7 +4450,7 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 		bc = (svf_login && info_ready)?255:150;
 		drawrect(vid_buf, 150, YRES+MENUSIZE-68, 50, 18, 255, 255, 255, bc);
 		drawtext(vid_buf, 168, YRES+MENUSIZE-63, "Report", 255, 255, 255, bc);
-		drawtext(vid_buf, 158, YRES+MENUSIZE-63, "!", 255, 255, 255, bc);
+		drawtext(vid_buf, 155, YRES+MENUSIZE-64, "\xE3", 255, 255, 255, bc);
 		//Delete Button
 		bc = authoritah?255:150;
 		drawrect(vid_buf, 200, YRES+MENUSIZE-68, 50, 18, 255, 255, 255, bc);
@@ -3729,7 +4561,7 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 		if (queue_open) {
 			if (info_ready && data_ready) {
 				// Do Open!
-				status = parse_save(data, data_size, 1, 0, 0, bmap, fvx, fvy, signs, parts, pmap);
+				status = parse_save(data, data_size, 1, 0, 0, bmap, vx, vy, pv, fvx, fvy, signs, parts, pmap);
 				if (!status) {
 					if(svf_last)
 						free(svf_last);
@@ -3782,6 +4614,9 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 		if (!info_ready || !data_ready) {
 			info_box(vid_buf, "Loading");
 		}
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 		memcpy(vid_buf, old_vid, ((XRES+BARSIZE)*(YRES+MENUSIZE))*PIXELSIZE);
 		if (info_ready && svf_login) {
@@ -3799,7 +4634,7 @@ int open_ui(pixel *vid_buf, char *save_id, char *save_date)
 	//Prevent those mouse clicks being passed down.
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -4062,6 +4897,7 @@ int search_results(char *str, int votes)
 		}
 		else if (!strncmp(str, "HISTORY ", 8))
 		{
+			char * id_d_temp = NULL;
 			if (i>=GRID_X*GRID_Y)
 				break;
 			if (votes)
@@ -4128,12 +4964,20 @@ int search_results(char *str, int votes)
 
 			if (s)
 				search_votes[i] = atoi(s);
-			thumb_cache_find(str+8, search_thumbs+i, search_thsizes+i);
+				
+			//Build thumb cache ID and find
+			id_d_temp = malloc(strlen(search_ids[i])+strlen(search_dates[i])+2);
+			strcpy(id_d_temp, search_ids[i]);
+			strappend(id_d_temp, "_");
+			strappend(id_d_temp, search_dates[i]);
+			thumb_cache_find(id_d_temp, search_thumbs+i, search_thsizes+i);
+			free(id_d_temp);
+			
 			i++;
 		}
 		else if (!strncmp(str, "MOTD ", 5))
 		{
-			memcpy(server_motd, str+5, strlen(str+5));
+			strncpy(server_motd, str+5, 511);
 		}
 		else if (!strncmp(str, "TAG ", 4))
 		{
@@ -4282,7 +5126,12 @@ void execute_save(pixel *vid_buf)
 	plens[0] = strlen(svf_name);
 	uploadparts[1] = svf_description;
 	plens[1] = strlen(svf_description);
-	uploadparts[2] = build_save(plens+2, 0, 0, XRES, YRES, bmap, fvx, fvy, signs, parts);
+	uploadparts[2] = build_save(plens+2, 0, 0, XRES, YRES, bmap, vx, vy, pv, fvx, fvy, signs, parts);
+	if (!uploadparts[2])
+	{
+		error_ui(vid_buf, 0, "Error creating save");
+		return;
+	}
 	uploadparts[3] = build_thumb(plens+3, 1);
 	uploadparts[4] = (svf_publish==1)?"Public":"Private";
 	plens[4] = strlen((svf_publish==1)?"Public":"Private");
@@ -4605,9 +5454,11 @@ char *console_ui(pixel *vid_buf,char error[255],char console_more) {
 	ed.multiline = 0;
 	ed.cursor = 0;
 	//fillrect(vid_buf, -1, -1, XRES, 220, 0, 0, 0, 190);
+	if (!old_buf)
+		return NULL;
 	memcpy(old_buf,vid_buf,(XRES+BARSIZE)*YRES*PIXELSIZE);
 
-	fillrect(old_buf, -1, -1, XRES, 220, 0, 0, 0, 190);
+	fillrect(old_buf, -1, -1, XRES+BARSIZE, 220, 0, 0, 0, 190);
 
 	currentcommand2 = malloc(sizeof(command_history));
 	memset(currentcommand2, 0, sizeof(command_history));
@@ -4623,9 +5474,7 @@ char *console_ui(pixel *vid_buf,char error[255],char console_more) {
 	}
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 		ed.focus = 1;
 
 		memcpy(vid_buf,old_buf,(XRES+BARSIZE)*YRES*PIXELSIZE);
@@ -4700,6 +5549,10 @@ char *console_ui(pixel *vid_buf,char error[255],char console_more) {
 		ui_edit_draw(vid_buf, &ed);
 		ui_edit_process(mx, my, b, &ed);
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
+#ifdef OGLR
+		clearScreenNP(1.0f);
+		draw_parts_fbo();
+#endif
 		if (sdl_key==SDLK_RETURN)
 		{
 			currentcommand = malloc(sizeof(command_history));
@@ -4759,6 +5612,7 @@ char *console_ui(pixel *vid_buf,char error[255],char console_more) {
 unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int savedColor)
 {//TODO: have the text boxes be editable and update the color.
 	int i,ss,hh,vv,cr=127,cg=0,cb=0,b = 0,mx,my,bq = 0,j, lb=0,lx=0,ly=0,lm=0,hidden=0;
+	int line_x=0, line_y=0;
 	int window_offset_x_left = 2;
 	int window_offset_x_right = XRES - 279;
 	int window_offset_y = 2;
@@ -4771,8 +5625,11 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 	int grid_offset_x;
 	int window_offset_x;
 	int onleft_button_offset_x;
-	int h = PIXR(savedColor), s = PIXG(savedColor), v = PIXB(savedColor); 
-	int th = h, ts = s, tv=v;
+	int currH = 0, currS = 255, currV = 127;
+	int currR = PIXR(savedColor), currG = PIXG(savedColor), currB = PIXB(savedColor);
+	int th = currH, ts = currS, tv = currV;
+	int tool = DECO_DRAW;
+	int active_color_menu= 0;
 	pixel *old_buf=calloc((XRES+BARSIZE)*(YRES+MENUSIZE), PIXELSIZE);
 	ui_edit box_R;
 	ui_edit box_G;
@@ -4814,22 +5671,21 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 	box_B.cursor = 0;
 
 
+	if (!old_buf)
+		return PIXRGB(currR,currG,currB);
 	memcpy(old_buf,vid_buf,(XRES+BARSIZE)*YRES*PIXELSIZE);
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		memcpy(vid_buf,old_buf,(XRES+BARSIZE)*(YRES+MENUSIZE)*PIXELSIZE);
-		draw_parts(vid_buf);
-		//ui_edit_process(mx, my, b, &box_R);
-		//ui_edit_process(mx, my, b, &box_G);
-		//ui_edit_process(mx, my, b, &box_B);
-		//HSV_to_RGB(h,s,v,&cr,&cg,&cb);
-		//if(cr != atoi(box_R.str))
-			//RGB_to_HSV(atoi(box_R.str),cg,cb,&h,&s,&v);
+		render_before(vid_buf);
+		render_after(vid_buf, NULL);
+		ui_edit_process(mx, my, b, &box_R);
+		ui_edit_process(mx, my, b, &box_G);
+		ui_edit_process(mx, my, b, &box_B);
+
 		if(on_left==1)
 		{
 			grid_offset_x = grid_offset_x_left;
@@ -4848,14 +5704,8 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 			box_G.x = XRES - 254 + 40;
 			box_B.x = XRES - 254 + 75;
 		}
-		if (zoom_en && mx>=zoom_wx && my>=zoom_wy //change mouse position while it is in a zoom window
-		        && mx<(zoom_wx+ZFACTOR*ZSIZE)
-		        && my<(zoom_wy+ZFACTOR*ZSIZE))
-		{
-			mx = (((mx-zoom_wx)/ZFACTOR)+zoom_x);
-			my = (((my-zoom_wy)/ZFACTOR)+zoom_y);
-		}
-
+		mouse_coords_window_to_sim(&mx, &my, mx, my);//change mouse position while it is in a zoom window
+		
 		drawrect(vid_buf, -1, -1, XRES+1, YRES+1, 220, 220, 220, 255);
 		drawrect(vid_buf, -1, -1, XRES+2, YRES+2, 70, 70, 70, 255);
 		drawtext(vid_buf, 2, 388, "Welcome to the decoration editor v.3 (by cracker64) \n\nClicking the current color on the window will move it to the other side. Right click is eraser. ", 255, 255, 255, 255);
@@ -4872,6 +5722,7 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 			ui_edit_draw(vid_buf, &box_G);
 			ui_edit_draw(vid_buf, &box_B);
 
+			//draw color square
 			for(ss=0; ss<=255; ss++)
 				for(hh=0;hh<=359;hh++)
 				{
@@ -4881,36 +5732,86 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 					HSV_to_RGB(hh,255-ss,255-ss,&cr,&cg,&cb);
 					vid_buf[(ss+grid_offset_y)*(XRES+BARSIZE)+(clamp_flt(hh, 0, 359)+grid_offset_x)] = PIXRGB(cr, cg, cb);
 				}
+			//draw brightness bar
 			for(vv=0; vv<=255; vv++)
 				for( i=0; i<10; i++)
 				{
 					cr = 0;
 					cg = 0;
 					cb = 0;
-					HSV_to_RGB(h,s,vv,&cr,&cg,&cb);
+					HSV_to_RGB(currH,currS,vv,&cr,&cg,&cb);
 					vid_buf[(vv+grid_offset_y)*(XRES+BARSIZE)+(i+grid_offset_x+255+4)] = PIXRGB(cr, cg, cb);
 				}
-			addpixel(vid_buf,grid_offset_x + clamp_flt(h, 0, 359),grid_offset_y-1,255,255,255,255);
-			addpixel(vid_buf,grid_offset_x -1,grid_offset_y+(255-s),255,255,255,255);
+			addpixel(vid_buf,grid_offset_x + clamp_flt(currH, 0, 359),grid_offset_y-1,255,255,255,255);
+			addpixel(vid_buf,grid_offset_x -1,grid_offset_y+(255-currS),255,255,255,255);
 
 			addpixel(vid_buf,grid_offset_x + clamp_flt(th, 0, 359),grid_offset_y-1,100,100,100,255);
 			addpixel(vid_buf,grid_offset_x -1,grid_offset_y+(255-ts),100,100,100,255);
 
 			addpixel(vid_buf,grid_offset_x + 255 +3,grid_offset_y+tv,100,100,100,255);
-			addpixel(vid_buf,grid_offset_x + 255 +3,grid_offset_y +v,255,255,255,255);
+			addpixel(vid_buf,grid_offset_x + 255 +3,grid_offset_y +currV,255,255,255,255);
 
-			HSV_to_RGB(h,s,v,&cr,&cg,&cb);
-			fillrect(vid_buf, window_offset_x + onleft_button_offset_x +1, window_offset_y +255+6, 12, 12, cr, cg, cb, 255);
+			fillrect(vid_buf, window_offset_x + onleft_button_offset_x +1, window_offset_y +255+6, 12, 12, currR, currG, currB, 255);
 		}
-		if( color_menu_ui(vid_buf, 1, &cr, &cg, &cb, b, bq, mx, my) )
-			RGB_to_HSV(cr,cg,cb,&h,&s,&v);
+		for (i=0; i<2; i++)//draw all the menu sections
+		{
+			draw_color_menu(vid_buf, i, active_color_menu);
+		}
 
-		HSV_to_RGB(h,s,v,&cr,&cg,&cb);
+		for (i=0; i<2; i++)//check mouse position to see if it is on a menu section
+		{
+			if (!b&&mx>=XRES-2 && mx<XRES+BARSIZE-1 &&my>= (i*16)+YRES+MENUSIZE-16-(DECO_SECTIONS*16) && my<(i*16)+YRES+MENUSIZE-16-(DECO_SECTIONS*16)+15)
+			{
+				active_color_menu = i;
+			}
+		}
+		if( color_menu_ui(vid_buf, active_color_menu, &currR, &currG, &currB, b, bq, mx, my, &tool) )
+			RGB_to_HSV(currR,currG,currB,&currH,&currS,&currV);
 
-		sprintf(box_R.str,"%d",cr);
-		sprintf(box_G.str,"%d",cg);
-		sprintf(box_B.str,"%d",cb);
-		fillrect(vid_buf, 250, YRES+4, 40, 15, cr, cg, cb, 255);
+		if(!box_R.focus)//prevent text update if it is being edited
+			sprintf(box_R.str,"%d",currR);
+		else
+		{
+			if(sdl_key == SDLK_RETURN)
+			{
+				cr = atoi(box_R.str);
+				if (cr > 255) cr = 255;
+				if (cr < 0) cr = 0;
+				currR = cr;
+				RGB_to_HSV(currR,currG,currB,&currH,&currS,&currV);
+				box_R.focus = 0;
+			}
+		}
+		if(!box_G.focus)
+			sprintf(box_G.str,"%d",currG);
+		else
+		{
+			if(sdl_key == SDLK_RETURN)
+			{
+				cg = atoi(box_G.str);
+				if (cg > 255) cg = 255;
+				if (cg < 0) cg = 0;
+				currG = cg;
+				RGB_to_HSV(currR,currG,currB,&currH,&currS,&currV);
+				box_G.focus = 0;
+			}
+		}
+		if(!box_B.focus)
+			sprintf(box_B.str,"%d",currB);
+		else
+		{
+			if(sdl_key == SDLK_RETURN)
+			{
+				cb = atoi(box_B.str);
+				if (cb > 255) cb = 255;
+				if (cb < 0) cb = 0;
+				currB = cb;
+				RGB_to_HSV(currR,currG,currB,&currH,&currS,&currV);
+				box_B.focus = 0;
+			}
+		}
+
+		fillrect(vid_buf, 250, YRES+4, 40, 15, currR, currG, currB, 255);
 
 		drawrect(vid_buf, 295, YRES+5, 25, 12, 255, 255, 255, 255);
 		if(hidden)
@@ -4920,20 +5821,26 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 
 		if(!lb && !hidden && mx >= window_offset_x && my >= window_offset_y && mx <= window_offset_x+255+4+10+5 && my <= window_offset_y+255+20)//in the main window
 		{
+			//inside brightness bar
 			if(mx >= grid_offset_x +255+4 && my >= grid_offset_y && mx <= grid_offset_x+255+4+10 && my <= grid_offset_y+255)
 			{
 				tv =  my - grid_offset_y;
 				if(b)
 				{
-					v =my - grid_offset_y;
+					currV =my - grid_offset_y;
+					HSV_to_RGB(currH,currS,tv,&currR,&currG,&currB);
 				}
-				HSV_to_RGB(h,s,tv,&cr,&cg,&cb);
+				HSV_to_RGB(currH,currS,tv,&cr,&cg,&cb);
 				//clearrect(vid_buf, window_offset_x + onleft_button_offset_x +1, window_offset_y +255+6,12,12);
 				fillrect(vid_buf, window_offset_x + onleft_button_offset_x +1, window_offset_y +255+6, 12, 12, cr, cg, cb, 255);
-				sprintf(box_R.str,"%d",cr);
-				sprintf(box_G.str,"%d",cg);
-				sprintf(box_B.str,"%d",cb);
+				if(!box_R.focus)
+					sprintf(box_R.str,"%d",cr);
+				if(!box_G.focus)
+					sprintf(box_G.str,"%d",cg);
+				if(!box_B.focus)
+					sprintf(box_B.str,"%d",cb);
 			}
+			//inside color grid
 			if(mx >= grid_offset_x && my >= grid_offset_y && mx <= grid_offset_x+255 && my <= grid_offset_y+255)
 			{
 				th = mx - grid_offset_x;
@@ -4941,22 +5848,28 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 				ts = 255 - (my - grid_offset_y);
 				if(b)
 				{
-					h = th;
-					s = ts;
+					currH = th;
+					currS = ts;
+					HSV_to_RGB(th,ts,currV,&currR,&currG,&currB);
 				}
-				HSV_to_RGB(th,ts,v,&cr,&cg,&cb);
+				HSV_to_RGB(th,ts,currV,&cr,&cg,&cb);
 				//clearrect(vid_buf, window_offset_x + onleft_button_offset_x +1, window_offset_y +255+6,12,12);
 				fillrect(vid_buf, window_offset_x + onleft_button_offset_x +1, window_offset_y +255+6, 12, 12, cr, cg, cb, 255);
 				//sprintf(box_R.def,"%d",cr);
-				sprintf(box_R.str,"%d",cr);
-				sprintf(box_G.str,"%d",cg);
-				sprintf(box_B.str,"%d",cb);
+				if(!box_R.focus)
+					sprintf(box_R.str,"%d",cr);
+				if(!box_G.focus)
+					sprintf(box_G.str,"%d",cg);
+				if(!box_B.focus)
+					sprintf(box_B.str,"%d",cb);
 			}
+			//switch side button
 			if(b && !bq && mx >= window_offset_x + onleft_button_offset_x +1 && my >= window_offset_y +255+6 && mx <= window_offset_x + onleft_button_offset_x +13 && my <= window_offset_y +255+5 +13)
 			{
 				on_left = !on_left;
 				lb = 3;//prevent immediate drawing after clicking
 			}
+			//clear button
 			if(b && !bq && mx >= window_offset_x + 230 && my >= window_offset_y +255+6 && mx <= window_offset_x + 230 +26 && my <= window_offset_y +255+5 +13)
 				if (confirm_ui(vid_buf, "Reset Decoration Layer", "Do you really want to erase everything?", "Erase") )
 				{
@@ -4965,9 +5878,9 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 						parts[i].dcolour = 0;
 				}
 		}
-		else if (mx > XRES || my > YRES)
+		else if (mx > XRES || my > YRES)//mouse outside normal drawing area
 		{
-			//click outside normal drawing area
+			//hide/show button
 			if (!zoom_en && b && !bq && mx >= 295 && mx <= 295+25 && my >= YRES+5 && my<= YRES+5+12)
 				hidden = !hidden;
 		}
@@ -4990,19 +5903,25 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 		}
 		else if (b)//there is a click, outside color window
 		{
-			if (!(b&1))
-			{
-				cr = 0;
-				cg = 0;
-				cb = 0;
-			}
 			if (lb)//mouse is held down
 			{
-				if (lm == 1)//line tool
+				if (lm == 1)//line tool preview
 				{
-					xor_line(lx, ly, mx, my, vid_buf);
+					if (sdl_mod & KMOD_ALT)
+					{
+						float snap_angle = floor(atan2(my-ly, mx-lx)/(M_PI*0.25)+0.5)*M_PI*0.25;
+						float line_mag = sqrtf(pow(mx-lx,2)+pow(my-ly,2));
+						line_x = (int)(line_mag*cos(snap_angle)+lx+0.5f);
+						line_y = (int)(line_mag*sin(snap_angle)+ly+0.5f);
+					}
+					else
+					{
+						line_x = mx;
+						line_y = my;
+					}
+					xor_line(lx, ly, line_x, line_y, vid_buf);
 				}
-				else if (lm == 2)//box tool
+				else if (lm == 2)//box tool preview
 				{
 					xor_line(lx, ly, lx, my, vid_buf);
 					xor_line(lx, my, mx, my, vid_buf);
@@ -5011,7 +5930,7 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 				}
 				else if(lb!=3)//while mouse is held down, it draws lines between previous and current positions
 				{
-					line_decorations(lx, ly, mx, my, *bsx, *bsy, cr, cg, cb, b);
+					line_decorations(lx, ly, mx, my, *bsx, *bsy, currR, currG, currB, b, tool);
 					lx = mx;
 					ly = my;
 				}
@@ -5043,7 +5962,14 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 						cg = PIXG(tempcolor);
 						cb = PIXB(tempcolor);
 						if (cr || cg || cb)
-							RGB_to_HSV(cr,cg,cb,&h,&s,&v);
+						{
+							if (cr && cr<255) cr++;
+							if (cg && cg<255) cg++;
+							if (cb && cb<255) cb++;
+							currR = cr;
+							currG = cg;
+							currB = cb;
+						}
 					}
 					lx = mx;
 					ly = my;
@@ -5052,7 +5978,7 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 				}
 				else //normal click, draw deco
 				{
-					create_decorations(mx,my,*bsx,*bsy,cr,cg,cb,b);
+					create_decorations(mx,my,*bsx,*bsy,currR,currG,currB,b, tool);
 					lx = mx;
 					ly = my;
 					lb = b;
@@ -5062,18 +5988,12 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 		}
 		else
 		{
-			if (!(lb&1))
-			{
-				cr = 0;
-				cg = 0;
-				cb = 0;
-			}
 			if (lb && lm) //lm is box/line tool
 			{
 				if (lm == 1)//line
-					line_decorations(lx, ly, mx, my, *bsx, *bsy, cr, cg, cb, lb);
+					line_decorations(lx, ly, line_x, line_y, *bsx, *bsy, currR, currG, currB, lb, tool);
 				else//box
-					box_decorations(lx, ly, mx, my, cr, cg, cb, lb);
+					box_decorations(lx, ly, mx, my, currR, currG, currB, lb, tool);
 				lm = 0;
 			}
 			lb = 0;
@@ -5085,11 +6005,14 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 		if (zoom_en)
 			render_zoom(vid_buf);
 
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		if (sdl_wheel)
 		{
-			if (sdl_zoom_trig==1)//zoom window change
+			if (sdl_zoom_trig)//zoom window change
 			{
 				ZSIZE += sdl_wheel;
 				if (ZSIZE>60)
@@ -5132,7 +6055,7 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 			}
 		}
 		if (sdl_key==SDLK_LEFTBRACKET) {
-			if (sdl_zoom_trig==1)
+			if (sdl_zoom_trig)
 			{
 				ZSIZE -= 1;
 				if (ZSIZE>60)
@@ -5172,7 +6095,7 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 			}
 		}
 		if (sdl_key==SDLK_RIGHTBRACKET) {
-			if (sdl_zoom_trig==1)
+			if (sdl_zoom_trig)
 			{
 				ZSIZE += 1;
 				if (ZSIZE>60)
@@ -5220,20 +6143,30 @@ unsigned int decorations_ui(pixel *vid_buf,int *bsx,int *bsy, unsigned int saved
 		{
 			zoom_en = 0;
 		}
-		if (sdl_key=='z' && zoom_en==2)
+		if (sdl_key=='z')
 		{
-			zoom_en = 1;
-			hidden = 1;
+			if (sdl_mod & KMOD_ALT)//toggle
+				sdl_zoom_trig = (!sdl_zoom_trig)*2;
+			else
+				sdl_zoom_trig = 1;
 		}
+		if (sdl_rkey == 'z' && sdl_zoom_trig==1)//if ==2 then it was toggled with alt+z, don't turn off on keyup
+				sdl_zoom_trig = 0;
+
+		if (!sdl_zoom_trig && zoom_en==1)
+			zoom_en = 0;
+
+		if (sdl_key=='z' && zoom_en==2)
+			zoom_en = 1;
 
 		if(sdl_key=='b' || sdl_key==SDLK_ESCAPE)
 		{
 			free(old_buf);
-			return PIXRGB(h,s,v);
+			return PIXRGB(currR,currG,currB);
 		}
 	}
 	free(old_buf);
-	return PIXRGB(h,s,v);
+	return PIXRGB(currR,currG,currB);
 }
 struct savelist_e {
 	char *filename;
@@ -5332,15 +6265,20 @@ int save_filename_ui(pixel *vid_buf)
 	int x0=(XRES+BARSIZE-xsize)/2,y0=(YRES+MENUSIZE-ysize)/2,b=1,bq,mx,my;
 	int idtxtwidth, nd=0, imgw, imgh, save_size;
 	void *save_data;
+	char *savefname = NULL;
+	char *filename = NULL;
 	pixel *old_vid=(pixel *)calloc((XRES+BARSIZE)*(YRES+MENUSIZE), PIXELSIZE);
 	pixel *save_tmp;
 	pixel *save_data_image;
-	pixel *save = calloc((XRES/3)*(YRES/3), PIXELSIZE);
+	pixel *save = NULL;//calloc((XRES/3)*(YRES/3), PIXELSIZE);
 	ui_edit ed;
 
-	save_data = build_save(&save_size, 0, 0, XRES, YRES, bmap, fvx, fvy, signs, parts);
+	save_data = build_save(&save_size, 0, 0, XRES, YRES, bmap, vx, vy, pv, fvx, fvy, signs, parts);
 	save_data_image = prerender_save(save_data, save_size, &imgw, &imgh);
-	save = resample_img(save_data_image, imgw, imgh, XRES/3, YRES/3);	
+	if(save_data_image!=NULL)
+	{
+		save = resample_img(save_data_image, imgw, imgh, XRES/3, YRES/3);
+	}
 
 	ed.x = x0+11;
 	ed.y = y0+25;
@@ -5365,7 +6303,7 @@ int save_filename_ui(pixel *vid_buf)
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -5378,15 +6316,16 @@ int save_filename_ui(pixel *vid_buf)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		clearrect(vid_buf, x0-2, y0-2, xsize+4, ysize+4);
 		drawrect(vid_buf, x0, y0, xsize, ysize, 192, 192, 192, 255);
 		drawtext(vid_buf, x0+8, y0+8, "Filename:", 255, 255, 255, 255);
 		drawrect(vid_buf, x0+8, y0+20, xsize-16, 16, 255, 255, 255, 180);
-		draw_image(vid_buf, save, x0+8, y0+40, XRES/3, YRES/3, 255);
+		if(save!=NULL)
+		{
+			draw_image(vid_buf, save, x0+8, y0+40, XRES/3, YRES/3, 255);
+		}
 		drawrect(vid_buf, x0+8, y0+40, XRES/3, YRES/3, 192, 192, 192, 255);
 		
 		drawrect(vid_buf, x0, y0+ysize-16, xsize, 16, 192, 192, 192, 255);
@@ -5394,8 +6333,11 @@ int save_filename_ui(pixel *vid_buf)
 		drawtext(vid_buf, x0+8, y0+ysize-12, "Save", 255, 255, 255, 255);
 
 		ui_edit_draw(vid_buf, &ed);
-		drawtext(vid_buf, x0+12+textwidth(ed.str), y0+25, ".cps", 240, 240, 255, 180);
-
+		if (strlen(ed.str) || ed.focus)
+			drawtext(vid_buf, x0+12+textwidth(ed.str), y0+25, ".cps", 240, 240, 255, 180);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 
 		memcpy(vid_buf, old_vid, ((XRES+BARSIZE)*(YRES+MENUSIZE))*PIXELSIZE);
@@ -5407,8 +6349,8 @@ int save_filename_ui(pixel *vid_buf)
 			if(b && !bq)
 			{
 				FILE *f = NULL;
-				char *savefname = malloc(strlen(ed.str)+5);
-				char *filename = malloc(strlen(LOCAL_SAVE_DIR)+strlen(PATH_SEP)+strlen(ed.str)+5);
+				savefname = malloc(strlen(ed.str)+5);
+				filename = malloc(strlen(LOCAL_SAVE_DIR)+strlen(PATH_SEP)+strlen(ed.str)+5);
 				sprintf(filename, "%s%s%s.cps", LOCAL_SAVE_DIR, PATH_SEP, ed.str);
 				sprintf(savefname, "%s.cps", ed.str);
 			
@@ -5434,6 +6376,13 @@ int save_filename_ui(pixel *vid_buf)
 						{
 							strncpy(svf_filename, savefname, 255);
 							svf_fileopen = 1;
+							
+							//Allow reloading
+							if(svf_last)
+								free(svf_last);
+							svf_last = malloc(save_size);
+							memcpy(svf_last, save_data, save_size);
+							svf_lsize = save_size;
 						}
 						break;
 					} else {
@@ -5455,7 +6404,7 @@ int save_filename_ui(pixel *vid_buf)
 savefin:
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -5463,6 +6412,8 @@ savefin:
 	free(save_data);
 	free(old_vid);
 	free(save);
+	if(filename) free(filename);
+	if(savefname) free(savefname);
 	return 0;
 }
 
@@ -5482,6 +6433,8 @@ void catalogue_ui(pixel * vid_buf)
 	ui_edit ed;
 	
 	vid_buf2 = calloc((XRES+BARSIZE)*(YRES+MENUSIZE), PIXELSIZE);
+	if (!vid_buf2)
+		return;
 	
 	ed.w = xsize-16-4;
 	ed.x = x0+11;
@@ -5498,7 +6451,7 @@ void catalogue_ui(pixel * vid_buf)
 	cssave = csave = saves;
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -5506,9 +6459,8 @@ void catalogue_ui(pixel * vid_buf)
 	fillrect(vid_buf, -1, -1, XRES+BARSIZE, YRES+MENUSIZE, 0, 0, 0, 192);
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		bq = b;
+		b = mouse_get_state(&mx, &my);
 		sprintf(savetext, "Found %d save%s", rescount, rescount==1?"":"s");
 		clearrect(vid_buf, x0-2, y0-2, xsize+4, ysize+4);
 		clearrect(vid_buf2, x0-2, y0-2, xsize+4, ysize+4);
@@ -5595,7 +6547,7 @@ void catalogue_ui(pixel * vid_buf)
 						void *data;
 						data = file_load(csave->filename, &size);
 						if(data){
-							status = parse_save(data, size, 1, 0, 0, bmap, fvx, fvy, signs, parts, pmap);
+							status = parse_save(data, size, 1, 0, 0, bmap, vx, vy, pv, fvx, fvy, signs, parts, pmap);
 							if(!status)
 							{
 								//svf_filename[0] = 0;
@@ -5636,13 +6588,13 @@ void catalogue_ui(pixel * vid_buf)
 							csave->image = resample_img(tmpimage, imgwidth, imgheight, XRES/CATALOGUE_S, YRES/CATALOGUE_S);
 							free(tmpimage);
 						} else {
-							//Blank image, this should default to something else
-							csave->image = malloc((XRES/CATALOGUE_S)*(YRES/CATALOGUE_S)*PIXELSIZE);
+							//Blank image, TODO: this should default to something else
+							csave->image = calloc((XRES/CATALOGUE_S)*(YRES/CATALOGUE_S), PIXELSIZE);
 						}
 						free(data);
 					} else {
-						//Blank image, this should default to something else
-						csave->image = malloc((XRES/CATALOGUE_S)*(YRES/CATALOGUE_S)*PIXELSIZE);
+						//Blank image, TODO: this should default to something else
+						csave->image = calloc((XRES/CATALOGUE_S)*(YRES/CATALOGUE_S), PIXELSIZE);
 					}
 					imageoncycle = 1;
 				}
@@ -5653,6 +6605,27 @@ void catalogue_ui(pixel * vid_buf)
 					drawtext(vid_buf2, listxc+((XRES/CATALOGUE_S)/2-textwidth(csave->name)/2), listyc+YRES/CATALOGUE_S+3, csave->name, 255, 255, 255, 255);
 				else
 					drawtext(vid_buf2, listxc+((XRES/CATALOGUE_S)/2-textwidth(csave->name)/2), listyc+YRES/CATALOGUE_S+3, csave->name, 240, 240, 255, 180);
+				if (mx>=listxc+XRES/GRID_S-4 && mx<=listxc+XRES/GRID_S+6 && my>=listyc-6 && my<=listyc+4)
+				{
+					if (b && !bq && confirm_ui(vid_buf, "Do you want to delete?", csave->name, "Delete"))
+					{
+						remove(csave->filename);
+						currentstart = 0;
+						if(saves!=NULL) free_saveslist(saves);
+						saves = get_local_saves(LOCAL_SAVE_DIR PATH_SEP, last, &rescount);
+						cssave = saves;
+						scrollvel = 0.0f;
+						offsetf = 0.0f;
+						thidden = 0;
+						if (rescount == 0)
+							rmdir(LOCAL_SAVE_DIR PATH_SEP);
+						break;
+					}
+					drawtext(vid_buf2, listxc+XRES/GRID_S-4, listyc-6, "\x86", 255, 48, 32, 255);
+				}
+				else
+					drawtext(vid_buf2, listxc+XRES/GRID_S-4, listyc-6, "\x86", 160, 48, 32, 255);
+				drawtext(vid_buf2, listxc+XRES/GRID_S-4, listyc-6, "\x85", 255, 255, 255, 255);
 				csave = csave->next;
 				if(++listx==CATALOGUE_X){
 					listx = 0;
@@ -5669,13 +6642,16 @@ void catalogue_ui(pixel * vid_buf)
 		{
 			pixel *srctemp = vid_buf2, *desttemp = vid_buf;
 			int j = 0;
-			for (j = y0+48; j < y0+ysize; j++)
+			for (j = y0+42; j < y0+ysize; j++)
 			{
 				memcpy(desttemp+j*(XRES+BARSIZE)+x0+1, srctemp+j*(XRES+BARSIZE)+x0+1, (xsize-1)*PIXELSIZE);
 				//desttemp+=(XRES+BARSIZE);//*PIXELSIZE;
 				//srctemp+=(XRES+BARSIZE);//*PIXELSIZE;
 			}
 		}
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 		if (sdl_key==SDLK_RETURN)
 			break;
@@ -5685,7 +6661,7 @@ void catalogue_ui(pixel * vid_buf)
 openfin:	
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -5695,10 +6671,358 @@ openfin:
 	return;
 }
 
+void drawIcon(pixel * vid_buf, int x, int y, int cmode)
+{
+	switch (cmode)
+	{
+	case 0x98:
+		drawtext(vid_buf, x, y, "\x98", 128, 160, 255, 255);
+		break;
+	case 0x99:
+		drawtext(vid_buf, x, y, "\x99", 255, 212, 32, 255);
+		break;
+	case 0x9A:
+		drawtext(vid_buf, x, y, "\x9A", 212, 212, 212, 255);
+		break;
+	case 0x9B:
+		drawtext(vid_buf, x+1, y, "\x9B", 255, 0, 0, 255);
+		drawtext(vid_buf, x+1, y, "\x9C", 255, 255, 64, 255);
+		break;
+	case 0xBF:
+		drawtext(vid_buf, x, y, "\xBF", 55, 255, 55, 255);
+		break;
+	case 0xBE:
+		drawtext(vid_buf, x+2, y, "\xBE", 255, 0, 0, 255);
+		drawtext(vid_buf, x+2, y, "\xBD", 255, 255, 255, 255);
+		break;
+	case 0xC4:
+		drawtext(vid_buf, x, y, "\xC4", 100, 150, 255, 255);
+		break;
+	case 0xD3:
+		drawtext(vid_buf, x, y, "\xD3", 255, 50, 255, 255);
+		break;
+	case 0xE0:
+		drawtext(vid_buf, x, y, "\xE0", 255, 255, 255, 255);
+		break;
+	case 0xE1:
+		drawtext(vid_buf, x, y, "\xE1", 255, 255, 160, 255);
+		break;
+	case 0xDF:
+		drawtext(vid_buf, x, y, "\xDF", 200, 255, 255, 255);
+		break;
+	case 0xDE:
+		drawtext(vid_buf, x, y, "\xDE", 255, 255, 255, 255);
+		break;
+	case 0xDB:
+		drawtext(vid_buf, x, y, "\xDB", 255, 255, 200, 255);
+		break;
+	case 0xD4:
+		drawtext(vid_buf, x, y, "\xD4", 255, 55, 55, 255);
+		drawtext(vid_buf, x, y, "\xD5", 55, 255, 55, 255);
+		break;
+	}
+}
+
+void render_ui(pixel * vid_buf, int xcoord, int ycoord, int orientation)
+{
+	pixel * o_vid_buf;
+	pixel *part_vbuf; //Extra video buffer
+	pixel *part_vbuf_store;
+	int i, j, count, changed, temp;
+	int xsize;
+	int ysize;
+	int yoffset;
+	int xoffset;
+	int xcoffset;
+	int b, bq, mx, my;
+	ui_checkbox *render_cb;
+	ui_checkbox *display_cb;
+	ui_checkbox *colour_cb;
+
+	int render_optioncount = 6;
+	int render_options[] = {RENDER_EFFE, RENDER_GLOW, RENDER_FIRE, RENDER_BLUR, RENDER_BLOB, RENDER_BASC};
+	int render_optionicons[] = {0xE1, 0xDF, 0x9B, 0xC4, 0xBF, 0xDB};
+	char * render_desc[] = {"Effects", "Glow", "Fire", "Blur", "Blob", "Basic"};
+	
+	int display_optioncount = 7;
+	int display_options[] = {DISPLAY_AIRC, DISPLAY_AIRP, DISPLAY_AIRV, DISPLAY_AIRH, DISPLAY_WARP, DISPLAY_PERS, DISPLAY_EFFE};
+	int display_optionicons[] = {0xD4, 0x99, 0x98, 0xBE, 0xDE, 0x9A, 0xE1};
+	char * display_desc[] = {"Air: Cracker", "Air: Pressure", "Air: Velocity", "Air: Heat", "Warp effect", "Persistent", "Effects"};
+
+	int colour_optioncount = 4;
+	int colour_options[] = {COLOUR_BASC, COLOUR_LIFE, COLOUR_HEAT, COLOUR_GRAD};
+	int colour_optionicons[] = {0xDB, 0xE0, 0xBE, 0xD3};
+	char * colour_desc[] = {"Basic", "Life", "Heat", "Heat Gradient"};
+
+	yoffset = 16;
+	xoffset = 0;
+	
+	xcoffset = 35;
+	
+	xsize = xcoffset*3;
+	ysize = display_optioncount * yoffset + 6;
+	
+	ycoord -= ysize;
+	xcoord -= xsize;
+	
+	colour_cb = calloc(colour_optioncount, sizeof(ui_checkbox));
+	for(i = 0; i < colour_optioncount; i++)
+	{
+		colour_cb[i].x = (xcoffset * 0) + xcoord + (i * xoffset) + 5;
+		colour_cb[i].y = ycoord + (i * yoffset) + 5;
+		colour_cb[i].focus = 0;
+		colour_cb[i].checked = 0;
+		j = 0;
+		if(colour_mode == colour_options[i])
+		{
+			colour_cb[i].checked = 1;
+		}
+	}
+	
+	render_cb = calloc(render_optioncount, sizeof(ui_checkbox));
+	for(i = 0; i < render_optioncount; i++)
+	{
+		render_cb[i].x = (xcoffset * 1) + xcoord + (i * xoffset) + 5;
+		render_cb[i].y = ycoord + (i * yoffset) + 5;
+		render_cb[i].focus = 0;
+		render_cb[i].checked = 0;
+		j = 0;
+		while(render_modes[j])
+		{
+			if(render_modes[j] == render_options[i])
+			{
+				render_cb[i].checked = 1;
+				break;
+			}
+			j++;
+		}
+	}
+	
+	display_cb = calloc(display_optioncount, sizeof(ui_checkbox));
+	for(i = 0; i < display_optioncount; i++)
+	{
+		display_cb[i].x = (xcoffset * 2) + xcoord + (i * xoffset) + 5;
+		display_cb[i].y = ycoord + (i * yoffset) + 5;
+		display_cb[i].focus = 0;
+		display_cb[i].checked = 0;
+		j = 0;
+		while(display_modes[j])
+		{
+			if(display_modes[j] == display_options[i])
+			{
+				display_cb[i].checked = 1;
+				break;
+			}
+			j++;
+		}
+	}
+	
+	o_vid_buf = calloc((YRES+MENUSIZE) * (XRES+BARSIZE), PIXELSIZE);
+	//memcpy(o_vid_buf, vid_buf, ((YRES+MENUSIZE) * (XRES+BARSIZE)) * PIXELSIZE);
+	
+	part_vbuf = calloc((XRES+BARSIZE)*(YRES+MENUSIZE), PIXELSIZE); //Extra video buffer
+	part_vbuf_store = part_vbuf;
+	
+	if (!o_vid_buf || !part_vbuf || !part_vbuf_store)
+		return;
+	while (!sdl_poll())
+	{
+		b = mouse_get_state(&mx, &my);
+		if (!b)
+			break;
+	}
+	
+	while (!sdl_poll())
+	{
+		bq = b;
+		b = mouse_get_state(&mx, &my);
+		
+		memcpy(vid_buf, o_vid_buf, ((YRES+MENUSIZE) * (XRES+BARSIZE)) * PIXELSIZE);
+#ifdef OGLR
+		part_vbuf = vid_buf;
+#else
+		if(ngrav_enable && (display_mode & DISPLAY_WARP))
+		{
+			part_vbuf = part_vbuf_store;
+			memset(vid_buf, 0, (XRES+BARSIZE)*YRES*PIXELSIZE);
+		} else {
+			part_vbuf = vid_buf;
+		}
+#endif
+		render_before(part_vbuf);
+		render_after(part_vbuf, vid_buf);
+		quickoptions_menu(vid_buf, b, bq, mx, my);
+		for (i=0; i<SC_TOTAL; i++)//draw all the menu sections
+		{
+			draw_menu(vid_buf, i, active_menu);
+		}
+		draw_svf_ui(vid_buf, sdl_mod & (KMOD_LCTRL|KMOD_RCTRL));
+		
+		clearrect(vid_buf, xcoord-2, ycoord-2, xsize+4, ysize+4);
+		drawrect(vid_buf, xcoord, ycoord, xsize, ysize, 192, 192, 192, 255);
+		
+		changed = 0;
+		for(i = 0; i < render_optioncount; i++)
+		{
+			temp = render_cb[i].checked;
+			drawIcon(vid_buf, render_cb[i].x + 16, render_cb[i].y+2, render_optionicons[i]);
+			ui_checkbox_draw(vid_buf, &(render_cb[i]));
+			ui_checkbox_process(mx, my, b, bq, &(render_cb[i]));
+			if(render_cb[i].focus)
+				drawtext(vid_buf, xcoord - textwidth(render_desc[i]) - 10, render_cb[i].y+2, render_desc[i], 255, 255, 255, 255);
+			if(temp != render_cb[i].checked)
+				changed = 1;
+		}
+		if(changed)
+		{
+			//Compile render options
+			count = 1;
+			for(i = 0; i < render_optioncount; i++)
+			{
+				if(render_cb[i].checked)
+					count++;
+			}
+			free(render_modes);
+			render_mode = 0;
+			render_modes = calloc(count, sizeof(unsigned int));
+			count = 0;
+			for(i = 0; i < render_optioncount; i++)
+			{
+				if(render_cb[i].checked)
+				{
+					render_modes[count] = render_options[i];
+					render_mode |= render_options[i];
+					count++;
+				}
+			}
+		}
+		
+		changed = 0;
+		for(i = 0; i < display_optioncount; i++)
+		{
+			temp = display_cb[i].checked;
+			drawIcon(vid_buf, display_cb[i].x + 16, display_cb[i].y+2, display_optionicons[i]);
+
+			if(display_options[i] & DISPLAY_AIR)
+			{
+				ui_radio_draw(vid_buf, &(display_cb[i]));
+				ui_radio_process(mx, my, b, bq, &(display_cb[i]));
+			}
+			else
+			{
+				ui_checkbox_draw(vid_buf, &(display_cb[i]));
+				ui_checkbox_process(mx, my, b, bq, &(display_cb[i]));
+			}
+			if(display_cb[i].checked && (display_options[i] & DISPLAY_AIR))	//One air type only
+			{
+				for(j = 0; j < display_optioncount; j++)
+				{
+					if((display_options[j] & DISPLAY_AIR) && j!=i)
+					{
+						display_cb[j].checked = 0;
+					}
+				}
+			}
+			if(display_cb[i].focus)
+				drawtext(vid_buf, xcoord - textwidth(display_desc[i]) - 10, display_cb[i].y+2, display_desc[i], 255, 255, 255, 255);
+			if(temp != display_cb[i].checked)
+				changed = 1;
+		}
+		if(changed)
+		{
+			//Compile display options
+			count = 1;
+			for(i = 0; i < display_optioncount; i++)
+			{
+				if(display_cb[i].checked)
+					count++;
+			}
+			free(display_modes);
+			display_mode = 0;
+			display_modes = calloc(count, sizeof(unsigned int));
+			count = 0;
+			for(i = 0; i < display_optioncount; i++)
+			{
+				if(display_cb[i].checked)
+				{
+					display_modes[count] = display_options[i];
+					display_mode |= display_options[i];
+					count++;
+				}
+			}
+		}
+		
+		changed = 0;
+		for(i = 0; i < colour_optioncount; i++)
+		{
+			temp = colour_cb[i].checked;
+			drawIcon(vid_buf, colour_cb[i].x + 16, colour_cb[i].y+2, colour_optionicons[i]);
+			ui_radio_draw(vid_buf, &(colour_cb[i]));
+			ui_radio_process(mx, my, b, bq, &(colour_cb[i]));
+			if(colour_cb[i].checked)	//One colour only
+			{
+				for(j = 0; j < colour_optioncount; j++)
+				{
+					if(j!=i)
+					{
+						colour_cb[j].checked = 0;
+					}
+				}
+			}
+			if(colour_cb[i].focus)
+				drawtext(vid_buf, xcoord - textwidth(colour_desc[i]) - 10, colour_cb[i].y+2, colour_desc[i], 255, 255, 255, 255);
+			if(temp != colour_cb[i].checked)
+				changed = 1;
+		}
+		if(changed)
+		{
+			//Compile colour options
+			colour_mode = 0;
+			for(i = 0; i < colour_optioncount; i++)
+			{
+				if(colour_cb[i].checked)
+				{
+					colour_mode |= colour_options[i];
+				}
+			}
+		}
+		
+#ifdef OGLR
+		clearScreenNP(1.0f);
+		draw_parts_fbo();
+#endif
+		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
+		
+		if (sdl_key==SDLK_RETURN)
+			break;
+		if (sdl_key==SDLK_ESCAPE)
+			break;
+		if (b && !bq && (mx < xcoord || mx > xcoord+xsize || my < ycoord || my > ycoord+ysize))
+			break;
+	}
+	
+	free(colour_cb);
+	
+	free(render_cb);
+	
+	free(display_cb);
+	
+	while (!sdl_poll())
+	{
+		b = mouse_get_state(&mx, &my);
+		if (!b)
+			break;
+	}
+	
+	free(part_vbuf_store);
+	
+	free(o_vid_buf);
+}
+
 void simulation_ui(pixel * vid_buf)
 {
 	int xsize = 300;
-	int ysize = 164;
+	int ysize = 260;
 	int x0=(XRES-xsize)/2,y0=(YRES-MENUSIZE-ysize)/2,b=1,bq,mx,my;
 	int new_scale, new_kiosk;
 	ui_checkbox cb;
@@ -5706,6 +7030,14 @@ void simulation_ui(pixel * vid_buf)
 	ui_checkbox cb3;
 	ui_checkbox cb4;
 	ui_checkbox cb5;
+	ui_checkbox cb6;
+	ui_checkbox cb7;
+	char * airModeList[] = {"On", "Pressure Off", "Velocity Off", "Off", "No Update"};
+	int airModeListCount = 5;
+	char * gravityModeList[] = {"Vertical", "Off", "Radial"};
+	int gravityModeListCount = 3;
+	ui_list list;
+	ui_list list2;
 
 	cb.x = x0+xsize-16;		//Heat simulation
 	cb.y = y0+23;
@@ -5718,12 +7050,12 @@ void simulation_ui(pixel * vid_buf)
 	cb2.checked = ngrav_enable;
 	
 	cb3.x = x0+xsize-16;	//Large window
-	cb3.y = y0+113;
+	cb3.y = y0+199;
 	cb3.focus = 0;
 	cb3.checked = (sdl_scale==2)?1:0;
 	
 	cb4.x = x0+xsize-16;	//Fullscreen
-	cb4.y = y0+129;
+	cb4.y = y0+213;
 	cb4.focus = 0;
 	cb4.checked = (kiosk_enable==1)?1:0;
 	
@@ -5732,9 +7064,37 @@ void simulation_ui(pixel * vid_buf)
 	cb5.focus = 0;
 	cb5.checked = aheat_enable;
 
+	cb6.x = x0+xsize-16;	//Water equalisation
+	cb6.y = y0+107;
+	cb6.focus = 0;
+	cb6.checked = water_equal_test;
+
+	cb7.x = x0+xsize-16;	//Block frame
+	cb7.y = y0+227;
+	cb7.focus = 0;
+	cb7.checked = bframe;
+	
+	list.x = x0+xsize-76;	//Air Mode
+	list.y = y0+135;
+	list.w = 72;
+	list.h = 16;
+	list.def = "[air mode]";
+	list.selected = airMode;
+	list.items = airModeList;
+	list.count = airModeListCount;
+	
+	list2.x = x0+xsize-76;	//Gravity Mode
+	list2.y = y0+163;
+	list2.w = 72;
+	list2.h = 16;
+	list2.def = "[gravity mode]";
+	list2.selected = gravityMode;
+	list2.items = gravityModeList;
+	list2.count = gravityModeListCount;
+
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
 	}
@@ -5742,9 +7102,7 @@ void simulation_ui(pixel * vid_buf)
 	while (!sdl_poll())
 	{
 		bq = b;
-		b = SDL_GetMouseState(&mx, &my);
-		mx /= sdl_scale;
-		my /= sdl_scale;
+		b = mouse_get_state(&mx, &my);
 
 		clearrect(vid_buf, x0-2, y0-2, xsize+4, ysize+4);
 		drawrect(vid_buf, x0, y0, xsize, ysize, 192, 192, 192, 255);
@@ -5761,14 +7119,27 @@ void simulation_ui(pixel * vid_buf)
 		drawtext(vid_buf, x0+8, y0+82, "Newtonian gravity", 255, 255, 255, 255);
 		drawtext(vid_buf, x0+12+textwidth("Newtonian gravity"), y0+82, "Introduced in version 48.", 255, 255, 255, 180);
 		drawtext(vid_buf, x0+12, y0+96, "May also cause slow performance on older computers", 255, 255, 255, 120);
+
+		drawtext(vid_buf, x0+8, y0+110, "Water Equalization Test", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+12+textwidth("Water Equalization Test"), y0+110, "Introduced in version 61.", 255, 255, 255, 180);
+		drawtext(vid_buf, x0+12, y0+124, "May lag with lots of water.", 255, 255, 255, 120);
 		
-		draw_line(vid_buf, x0, y0+110, x0+xsize, y0+110, 150, 150, 150, XRES+BARSIZE);
+		drawtext(vid_buf, x0+8, y0+138, "Air Simulation Mode", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+12, y0+152, "airMode", 255, 255, 255, 120);
 		
-		drawtext(vid_buf, x0+8, y0+116, "Large window", 255, 255, 255, 255);
-		drawtext(vid_buf, x0+12+textwidth("Large window"), y0+116, "Double window size for small screens", 255, 255, 255, 180);
+		drawtext(vid_buf, x0+8, y0+166, "Gravity Simulation Mode", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+12, y0+180, "gravityMode", 255, 255, 255, 120);
 		
-		drawtext(vid_buf, x0+8, y0+132, "Fullscreen", 255, 255, 255, 255);
-		drawtext(vid_buf, x0+12+textwidth("Fullscreen"), y0+132, "Fill the entire screen", 255, 255, 255, 180);
+		draw_line(vid_buf, x0, y0+194, x0+xsize, y0+194, 150, 150, 150, XRES+BARSIZE);
+		
+		drawtext(vid_buf, x0+8, y0+200, "Large window", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+12+textwidth("Large window"), y0+200, "Double window size for small screens", 255, 255, 255, 180);
+		
+		drawtext(vid_buf, x0+8, y0+214, "Fullscreen", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+12+textwidth("Fullscreen"), y0+214, "Fill the entire screen", 255, 255, 255, 180);
+
+		drawtext(vid_buf, x0+8, y0+228, "Block frame", 255, 255, 255, 255);
+		drawtext(vid_buf, x0+12+textwidth("Block frame"), y0+228, "Draws a wall frame around screen", 255, 255, 255, 180);
 
 		//TODO: Options for Air and Normal gravity
 		//Maybe save/load defaults too.
@@ -5781,12 +7152,23 @@ void simulation_ui(pixel * vid_buf)
 		ui_checkbox_draw(vid_buf, &cb3);
 		ui_checkbox_draw(vid_buf, &cb4);
 		ui_checkbox_draw(vid_buf, &cb5);
+		ui_checkbox_draw(vid_buf, &cb6);
+		ui_checkbox_draw(vid_buf, &cb7);
+		ui_list_draw(vid_buf, &list);
+		ui_list_draw(vid_buf, &list2);
+#ifdef OGLR
+		clearScreen(1.0f);
+#endif
 		sdl_blit(0, 0, (XRES+BARSIZE), YRES+MENUSIZE, vid_buf, (XRES+BARSIZE));
 		ui_checkbox_process(mx, my, b, bq, &cb);
 		ui_checkbox_process(mx, my, b, bq, &cb2);
 		ui_checkbox_process(mx, my, b, bq, &cb3);
 		ui_checkbox_process(mx, my, b, bq, &cb4);
 		ui_checkbox_process(mx, my, b, bq, &cb5);
+		ui_checkbox_process(mx, my, b, bq, &cb6);
+		ui_checkbox_process(mx, my, b, bq, &cb7);
+		ui_list_process(vid_buf, mx, my, b, &list);
+		ui_list_process(vid_buf, mx, my, b, &list2);
 
 		if (b && !bq && mx>=x0 && mx<x0+xsize && my>=y0+ysize-16 && my<=y0+ysize)
 			break;
@@ -5797,10 +7179,15 @@ void simulation_ui(pixel * vid_buf)
 			break;
 	}
 
+	water_equal_test = cb6.checked;
 	legacy_enable = !cb.checked;
 	aheat_enable = cb5.checked;
 	new_scale = (cb3.checked)?2:1;
 	new_kiosk = (cb4.checked)?1:0;
+	if(list.selected>=0 && list.selected<=4)
+		airMode = list.selected;
+	if(list2.selected>=0 && list2.selected<=2)
+		gravityMode = list2.selected;
 	if(new_scale!=sdl_scale || new_kiosk!=kiosk_enable)
 	{
 		if (!set_scale(new_scale, new_kiosk))
@@ -5813,11 +7200,44 @@ void simulation_ui(pixel * vid_buf)
 		else
 			stop_grav_async();
 	}
+	if(cb7.checked && !bframe)
+		draw_bframe();
+	if(!cb7.checked && bframe)
+		erase_bframe();
+	bframe = cb7.checked;
 
 	while (!sdl_poll())
 	{
-		b = SDL_GetMouseState(&mx, &my);
+		b = mouse_get_state(&mx, &my);
 		if (!b)
 			break;
+	}
+}
+
+Uint8 mouse_get_state(int *x, int *y)
+{
+	//Wrapper around SDL_GetMouseState to divide by sdl_scale
+	Uint8 sdl_b;
+	int sdl_x, sdl_y;
+	sdl_b = SDL_GetMouseState(&sdl_x, &sdl_y);
+	*x = sdl_x/sdl_scale;
+	*y = sdl_y/sdl_scale;
+	return sdl_b;
+}
+
+void mouse_coords_window_to_sim(int *sim_x, int *sim_y, int window_x, int window_y)
+{
+	//Change mouse coords to take zoom window into account
+	if (zoom_en && window_x>=zoom_wx && window_y>=zoom_wy
+		&& window_x<(zoom_wx+ZFACTOR*ZSIZE)
+		&& window_y<(zoom_wy+ZFACTOR*ZSIZE))
+	{
+		*sim_x = (((window_x-zoom_wx)/ZFACTOR)+zoom_x);
+		*sim_y = (((window_y-zoom_wy)/ZFACTOR)+zoom_y);
+	}
+	else
+	{
+		*sim_x = window_x;
+		*sim_y = window_y;
 	}
 }

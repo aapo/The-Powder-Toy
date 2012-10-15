@@ -1,8 +1,23 @@
+/**
+ * Powder Toy - graphics (header)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 #ifndef GRAPHICS_H
 #define GRAPHICS_H
 #include <SDL/SDL.h>
 #include "defines.h"
-#include "hmap.h"
 
 #ifdef PIX16
 #define PIXELSIZE 2
@@ -26,6 +41,14 @@
 #define PIXR(x) (((x)>>8)&0xFF)
 #define PIXG(x) (((x)>>16)&0xFF)
 #define PIXB(x) (((x)>>24))
+#elif defined(PIX32OGL)
+#define PIXPACK(x) (0xFF000000|((x)&0xFFFFFF))
+#define PIXRGB(r,g,b) (0xFF000000|((r)<<16)|((g)<<8)|((b)))// (((b)<<16)|((g)<<8)|(r))
+#define PIXRGBA(r,g,b,a) (((a)<<24)|((r)<<16)|((g)<<8)|((b)))// (((b)<<16)|((g)<<8)|(r))
+#define PIXA(x) (((x)>>24)&0xFF)
+#define PIXR(x) (((x)>>16)&0xFF)
+#define PIXG(x) (((x)>>8)&0xFF)
+#define PIXB(x) ((x)&0xFF)
 #else
 #define PIXPACK(x) (x)
 #define PIXRGB(r,g,b) (((r)<<16)|((g)<<8)|(b))
@@ -36,17 +59,55 @@
 #endif
 #endif
 
-extern unsigned cmode;
+extern int emp_decor;
+
+extern unsigned int *render_modes;
+extern unsigned int render_mode;
+extern unsigned int colour_mode;
+extern unsigned int *display_modes;
+extern unsigned int display_mode;
+
 extern SDL_Surface *sdl_scrn;
 extern int sdl_scale;
+
+extern int sandcolour_r;
+extern int sandcolour_g;
+extern int sandcolour_b;
+extern int sandcolour_frame;
 
 extern unsigned char fire_r[YRES/CELL][XRES/CELL];
 extern unsigned char fire_g[YRES/CELL][XRES/CELL];
 extern unsigned char fire_b[YRES/CELL][XRES/CELL];
 
 extern unsigned int fire_alpha[CELL*3][CELL*3];
-extern pixel *fire_bg;
 extern pixel *pers_bg;
+
+extern char * flm_data;
+extern int flm_data_points;
+extern pixel flm_data_colours[];
+extern float flm_data_pos[];
+
+extern char * plasma_data;
+extern int plasma_data_points;
+extern pixel plasma_data_colours[];
+extern float plasma_data_pos[];
+
+struct gcache_item
+{
+	int isready;
+	int pixel_mode;
+	int cola, colr, colg, colb;
+	int firea, firer, fireg, fireb;
+};
+typedef struct gcache_item gcache_item;
+
+gcache_item *graphicscache;
+
+void prepare_graphicscache();
+
+char * generate_gradient(pixel * colours, float * points, int pointcount, int size);
+
+void draw_other(pixel *vid);
 
 void draw_rgba_image(pixel *vid, unsigned char *data, int x, int y, float a);
 
@@ -77,6 +138,8 @@ int draw_tool_xy(pixel *vid_buf, int x, int y, int b, unsigned pc);
 void draw_menu(pixel *vid_buf, int i, int hover);
 
 void drawpixel(pixel *vid, int x, int y, int r, int g, int b, int a);
+
+int addchar(pixel *vid, int x, int y, int c, int r, int g, int b, int a);
 
 int drawchar(pixel *vid, int x, int y, int c, int r, int g, int b, int a);
 
@@ -130,15 +193,29 @@ void xor_rect(pixel *vid, int x, int y, int w, int h);
 
 void blend_line(pixel *vid, int x1, int y1, int x2, int y2, int r, int g, int b, int a);
 
+void render_parts(pixel *vid);
+
+void render_before(pixel *part_vbuf);
+
+void render_after(pixel *part_vbuf, pixel *vid_buf);
+
+#ifdef OGLR
+void draw_parts_fbo();
+#endif
+
 void draw_parts(pixel *vid);
 
 void draw_walls(pixel *vid);
 
-void create_decorations(int x, int y, int rx, int ry, int r, int g, int b, int click);
+void create_decorations(int x, int y, int rx, int ry, int r, int g, int b, int click, int tool);
 
-void line_decorations(int x1, int y1, int x2, int y2, int rx, int ry, int r, int g, int b, int click);
+void create_decoration(int x, int y, int r, int g, int b, int click, int tool);
 
-void box_decorations(int x1, int y1, int x2, int y2, int r, int g, int b, int click);
+void line_decorations(int x1, int y1, int x2, int y2, int rx, int ry, int r, int g, int b, int click, int tool);
+
+void box_decorations(int x1, int y1, int x2, int y2, int r, int g, int b, int click, int tool);
+
+void draw_color_menu(pixel *vid_buf, int i, int hover);
 
 void draw_wavelengths(pixel *vid, int x, int y, int h, int wl);
 
@@ -156,8 +233,6 @@ void dim_copy_pers(pixel *dst, pixel *src);
 
 void render_zoom(pixel *img);
 
-pixel *prerender_save(void *save, int size, int *width, int *height);
-
 int render_thumb(void *thumb, int size, int bzip2, pixel *vid_buf, int px, int py, int scl);
 
 void render_cursor(pixel *vid, int x, int y, int t, int rx, int ry);
@@ -166,10 +241,118 @@ int sdl_open(void);
 
 int draw_debug_info(pixel* vid, int lm, int lx, int ly, int cx, int cy, int line_x, int line_y);
 
-#ifdef OpenGL
-void Enable2D ();
-void RenderScene ();
-void ClearScreen();
+void init_display_modes();
+void update_display_modes();
+
+#ifdef OGLR
+void clearScreen(float alpha);
+void ogl_blit(int x, int y, int w, int h, pixel *src, int pitch, int scale);
 #endif
 
+#endif
+
+#ifdef INCLUDE_SHADERS
+#ifndef SHADERS_H
+#define SHADERS_H
+const char * fireFragment = "#version 120\n\
+uniform sampler2D fireAlpha;\
+void main () {\
+    vec4 texColor = texture2D(fireAlpha, gl_PointCoord);\
+    gl_FragColor = vec4(gl_Color.rgb, texColor.a*gl_Color.a);\
+}";
+const char * fireVertex = "#version 120\n\
+void main(void)\
+{\
+   gl_Position = ftransform();;\
+   gl_FrontColor = gl_Color;\
+}";
+const char * lensFragment = "#version 120\n\
+uniform sampler2D pTex;\
+uniform sampler2D tfX;\
+uniform sampler2D tfY;\
+uniform float xres;\
+uniform float yres;\
+void main () {\
+	vec4 transformX = texture2D(tfX, vec2(gl_TexCoord[0].s, gl_TexCoord[0].t));\
+	vec4 transformY = texture2D(tfY, vec2(gl_TexCoord[0].s, gl_TexCoord[0].t));\
+	transformX.r /= xres/4.0;\
+	transformY.g /= yres/4.0;\
+    vec4 texColor1 = vec4(\
+    	texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.90, transformY.g*0.90)).r,\
+    	texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.80, transformY.g*0.80)).g,\
+    	texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.70, transformY.g*0.70)).b,\
+    	1.0\
+    );\
+	vec4 texColor2 = vec4(\
+		texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.95, transformY.g*0.95)).r,\
+		texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.85, transformY.g*0.85)).g,\
+		texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.75, transformY.g*0.75)).b,\
+		1.0\
+	);\
+	vec4 texColor3 = vec4(\
+		texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.85, transformY.g*0.85)).r,\
+		texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.75, transformY.g*0.75)).g,\
+		texture2D(pTex, gl_TexCoord[0].st-vec2(transformX.r*0.65, transformY.g*0.65)).b,\
+		1.0\
+	);\
+	vec4 texColor = texColor1*0.6 + texColor2*0.2 + texColor3*0.2;\
+    gl_FragColor = texColor;\
+}";
+const char * lensVertex = "#version 120\n\
+void main(void)\
+{\
+	gl_TexCoord[0]  = gl_MultiTexCoord0;\
+	gl_Position = ftransform();;\
+	gl_FrontColor = gl_Color;\
+}";
+const char * airVFragment = "#version 120\n\
+uniform sampler2D airX;\
+uniform sampler2D airY;\
+uniform sampler2D airP;\
+void main () {\
+	vec4 texX = texture2D(airX, gl_TexCoord[0].st);\
+	vec4 texY = texture2D(airY, gl_TexCoord[0].st);\
+	vec4 texP = texture2D(airP, gl_TexCoord[0].st);\
+	gl_FragColor = vec4(abs(texX.r)/2.0, texP.b/2.0, abs(texY.g)/2.0, 1.0);\
+}";
+const char * airVVertex = "#version 120\n\
+void main(void)\
+{\
+	gl_TexCoord[0]  = gl_MultiTexCoord0;\
+	gl_Position = ftransform();;\
+	gl_FrontColor = gl_Color;\
+}";
+const char * airPFragment = "#version 120\n\
+uniform sampler2D airX;\
+uniform sampler2D airY;\
+uniform sampler2D airP;\
+void main () {\
+	vec4 texP = texture2D(airP, gl_TexCoord[0].st);\
+    gl_FragColor = vec4(max(texP.b/2.0, 0), 0, abs(min(texP.b/2.0, 0)), 1.0);\
+}";
+const char * airPVertex = "#version 120\n\
+void main(void)\
+{\
+	gl_TexCoord[0]  = gl_MultiTexCoord0;\
+	gl_Position = ftransform();;\
+	gl_FrontColor = gl_Color;\
+}";
+const char * airCFragment = "#version 120\n\
+uniform sampler2D airX;\
+uniform sampler2D airY;\
+uniform sampler2D airP;\
+void main () {\
+	vec4 texX = texture2D(airX, gl_TexCoord[0].st);\
+	vec4 texY = texture2D(airY, gl_TexCoord[0].st);\
+	vec4 texP = texture2D(airP, gl_TexCoord[0].st);\
+    gl_FragColor = vec4(max(texP.b/2.0, 0), 0, abs(min(texP.b/2.0, 0)), 1.0) + vec4(abs(texX.r)/8.0, abs(texX.r)/8.0, abs(texX.r)/8.0, 1.0) + vec4(abs(texY.g)/8.0, abs(texY.g)/8.0, abs(texY.g)/8.0, 1.0);\
+}";
+const char * airCVertex = "#version 120\n\
+void main(void)\
+{\
+	gl_TexCoord[0]  = gl_MultiTexCoord0;\
+	gl_Position = ftransform();;\
+	gl_FrontColor = gl_Color;\
+}";
+#endif
 #endif
