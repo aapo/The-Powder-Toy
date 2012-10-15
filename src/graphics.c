@@ -4067,8 +4067,12 @@ int sdl_open(void)
 	SendMessage(WindowHandle, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
 	SendMessage(WindowHandle, WM_SETICON, ICON_BIG, (LPARAM)hIconBig);
 #elif defined(LIN32) || defined(LIN64)
+
+#ifndef MAEMO
 	icon = SDL_CreateRGBSurfaceFrom(app_icon, 16, 16, 32, 64, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
 	SDL_WM_SetIcon(icon, NULL);
+#endif
+
 #endif
 	SDL_WM_SetCaption("The Powder Toy", "Powder Toy");
 	
