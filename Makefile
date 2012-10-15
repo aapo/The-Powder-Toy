@@ -26,11 +26,6 @@ powder: $(SOURCES)
 	$(COMPILER) -DINTERNAL -o$@ $(CFLAGS) $(OFLAGS) $(MFLAGS_SSE3) $(SOURCES) $(LFLAGS) -DLIN64
 	mv $@ build
 
-powder-maemo: $(SOURCES)
-	$(PYCOMMAND)
-	$(COMPILER) -DINTERNAL -o$@ $(CFLAGS) $(OFLAGS) $(SOURCES) $(LFLAGS) -DLIN64 -DMAEMO
-	mv $@ build
-
 powder-debug-64: $(SOURCES)
 	$(PYCOMMAND)
 	$(COMPILER) -m64 -o$@ $(FLAGS_DBUG) -DLIN64 $(SOURCES) -Iincludes/ $(LFLAGS)
